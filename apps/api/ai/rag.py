@@ -149,19 +149,57 @@ def answer(query: str, k: int = 5) -> dict[str, Any]:
     hits = search(query, k)
     if not hits:
         return {"answer": "Nothing indexed yet. Call /ai/rag/index-from-items first.", "sources": []}
-    context = "\n\n".join(f"[{i + 1}] {h['text']}" for i, h in enumerate(hits))
-    text = llm.complete(
-        f"Context:\n{context}\n\nQuestion: {query}",
-        system="Answer ONLY from the context. Cite sources inline as [1], [2]. If the context is insufficient, say so plainly.",
+
+    sources = [
+        {"n": i + 1, "doc_id": h["doc_id"], "score": h["score"], "excerpt": h["text"][:220]}
+        for i, h in enumerate(hits)
+    ]
+
+    if llm.available()["mode"] == "offline":
+        # No LLM: compose a clean extractive answer from the retrieved passages.
+        # Passing the scaffolded prompt to the generic summariser would echo
+        # "Context:" and "[1]" back at the judge, which reads as broken.
+        text = _extractive_answer(query, hits)
+        engine = "extractive"
+    else:
+        context = "\n\n".join(f"[{i + 1}] {h['text']}" for i, h in enumerate(hits))
+        text = llm.complete(
+            f"Context:\n{context}\n\nQuestion: {query}",
+            system="Answer ONLY from the context. Cite sources inline as [1], [2]. "
+                   "If the context is insufficient, say so plainly.",
+        )
+        engine = "llm"
+
+    return {"answer": text, "sources": sources, "mode": hits[0].get("mode"), "engine": engine}
+
+
+def _extractive_answer(query: str, hits: list[dict[str, Any]]) -> str:
+    """Pick the sentences from the retrieved passages that best match the query,
+    and present them as a cited answer. Deterministic and honest."""
+    terms = {t for t in re.findall(r"\w+", query.lower()) if len(t) > 2}
+    picked: list[str] = []
+    for i, h in enumerate(hits):
+        best, best_score = "", 0
+        for sent in re.split(r"(?<=[.!?])\s+", h["text"]):
+            sent = sent.strip()
+            if len(sent) < 15:
+                continue
+            score = sum(1 for t in terms if t in sent.lower())
+            if score > best_score:
+                best, best_score = sent, score
+        if best:
+            picked.append(f"- {best} [{i + 1}]")
+        elif h["text"].strip():
+            picked.append(f"- {h['text'].strip().splitlines()[0][:150]} [{i + 1}]")
+
+    if not picked:
+        return "The indexed records do not contain enough information to answer that."
+    return (
+        f"Based on {len(hits)} retrieved records:\n"
+        + "\n".join(picked)
+        + "\n\n(Retrieval-only mode: no language model is reachable, so this is "
+          "extracted verbatim from the sources rather than rewritten.)"
     )
-    return {
-        "answer": text,
-        "sources": [
-            {"n": i + 1, "doc_id": h["doc_id"], "score": h["score"], "excerpt": h["text"][:220]}
-            for i, h in enumerate(hits)
-        ],
-        "mode": hits[0].get("mode"),
-    }
 
 
 def available() -> dict[str, Any]:

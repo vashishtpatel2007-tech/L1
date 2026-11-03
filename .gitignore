@@ -13,3 +13,5 @@ data/models/*.pkl
 data/index/*.npz
 *.log
 .pytest_cache/
+data/raw/images/
+data/raw/sample.csv
