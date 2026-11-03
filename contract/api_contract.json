@@ -1,0 +1,186 @@
+{
+  "$comment": "FROZEN API CONTRACT. Both the backend and the frontend are built against this file and nothing else. Change it only by announcing it to the whole team out loud, then re-running scripts/verify_contract.py. Edit DOMAIN below on hackathon morning; leave the shapes alone.",
+  "version": "1.0.0",
+  "domain": {
+    "object": "item",
+    "object_plural": "items",
+    "$comment_domain": "On hackathon morning, change these two values AND the enum lists below to your PS domain. The response SHAPES must not change -- only the allowed values.",
+    "categories": ["infrastructure", "health", "education", "safety", "environment"],
+    "statuses": ["open", "in_progress", "resolved"],
+    "severity_range": [1, 5]
+  },
+  "base_url_dev": "http://127.0.0.1:8000",
+  "conventions": {
+    "auth": "Bearer JWT in Authorization header. Read endpoints must work WITHOUT auth so a judge can open the app cold.",
+    "errors": "Non-2xx returns {\"detail\": string}. Never return an HTML error page.",
+    "cors": "Allow all origins. The frontend may be served from a different port or a tunnel.",
+    "timestamps": "ISO-8601 UTC strings.",
+    "ids": "Integers, server-assigned.",
+    "money_and_counts": "Plain JSON numbers. Never pre-formatted strings."
+  },
+  "endpoints": [
+    {
+      "id": "health",
+      "method": "GET",
+      "path": "/health",
+      "auth": false,
+      "response": { "ok": "bool", "app": "str", "uptime_s": "num", "offline_mode": "bool" }
+    },
+    {
+      "id": "list_items",
+      "method": "GET",
+      "path": "/items",
+      "auth": false,
+      "query": {
+        "q": "str?", "category": "str?", "status": "str?", "min_severity": "int?",
+        "sort": "str? one of created_at|severity|score|status|category",
+        "order": "str? one of asc|desc", "limit": "int? default 100", "offset": "int? default 0"
+      },
+      "response": { "total": "int", "items": "list[Item]", "limit": "int", "offset": "int" }
+    },
+    {
+      "id": "get_item",
+      "method": "GET",
+      "path": "/items/{id}",
+      "auth": false,
+      "response_is": "Item"
+    },
+    {
+      "id": "create_item",
+      "method": "POST",
+      "path": "/items",
+      "auth": false,
+      "status": 201,
+      "body": { "title": "str", "body": "str", "category": "str", "status": "str", "severity": "int", "score": "num", "lat": "num?", "lon": "num?", "meta": "obj" },
+      "response_is": "Item"
+    },
+    {
+      "id": "patch_item",
+      "method": "PATCH",
+      "path": "/items/{id}",
+      "auth": false,
+      "body": { "title": "str?", "body": "str?", "category": "str?", "status": "str?", "severity": "int?", "score": "num?", "meta": "obj?" },
+      "response_is": "Item"
+    },
+    {
+      "id": "stats",
+      "method": "GET",
+      "path": "/items/stats",
+      "auth": false,
+      "$comment": "Single round trip powering the whole dashboard. Must be registered BEFORE /items/{id} or the router will match 'stats' as an id.",
+      "response": {
+        "total": "int", "resolved": "int", "resolution_rate": "num", "avg_severity": "num",
+        "by_category": "list[{key:str,count:int}]",
+        "by_status": "list[{key:str,count:int}]",
+        "by_severity": "list[{key:str,count:int}]",
+        "geo": "list[{lat:num,lon:num,severity:int,category:str,id:int}]"
+      }
+    },
+    {
+      "id": "triage",
+      "method": "POST",
+      "path": "/ai/triage",
+      "auth": false,
+      "body": { "text": "str", "categories": "list[str]?", "item_id": "int?" },
+      "$comment": "MUST NOT raise and MUST NOT return empty when the LLM is unreachable. Fall back to a deterministic rules engine returning the same shape.",
+      "response": {
+        "category": "str", "severity": "int", "summary": "str", "suggested_action": "str",
+        "department": "str", "confidence": "num", "engine": "str"
+      }
+    },
+    {
+      "id": "summarise",
+      "method": "POST",
+      "path": "/ai/summarise",
+      "auth": false,
+      "body": { "text": "str", "style": "str?" },
+      "response": { "summary": "str" }
+    },
+    {
+      "id": "ai_health",
+      "method": "GET",
+      "path": "/ai/health",
+      "auth": false,
+      "response": { "offline_mode": "bool", "capabilities": "obj" }
+    },
+    {
+      "id": "rag_index_from_items",
+      "method": "POST",
+      "path": "/ai/rag/index-from-items",
+      "auth": false,
+      "response": { "chunks": "int", "mode": "str" }
+    },
+    {
+      "id": "rag_ask",
+      "method": "POST",
+      "path": "/ai/rag/ask",
+      "auth": false,
+      "body": { "query": "str", "k": "int?" },
+      "response": { "answer": "str", "sources": "list[{n:int,doc_id:str,score:num,excerpt:str}]" }
+    },
+    {
+      "id": "seed",
+      "method": "POST",
+      "path": "/demo/seed",
+      "auth": false,
+      "body": { "n": "int?", "reset": "bool?" },
+      "$comment": "MUST be deterministic: the same n produces the same records every run, so the demo looks identical each time.",
+      "response": { "seeded": "int" }
+    },
+    {
+      "id": "offline_toggle",
+      "method": "POST",
+      "path": "/demo/offline",
+      "auth": false,
+      "body": { "offline": "bool" },
+      "response": { "offline": "bool" }
+    },
+    {
+      "id": "impact",
+      "method": "GET",
+      "path": "/metrics/impact",
+      "auth": false,
+      "response": { "assumptions": "obj", "demo": "obj", "at_national_scale": "obj", "quality": "obj" }
+    },
+    {
+      "id": "signup",
+      "method": "POST",
+      "path": "/auth/signup",
+      "auth": false,
+      "body": { "email": "str", "password": "str", "name": "str?" },
+      "response": { "token": "str", "user": "obj" }
+    },
+    {
+      "id": "login",
+      "method": "POST",
+      "path": "/auth/login",
+      "auth": false,
+      "body": { "email": "str", "password": "str" },
+      "response": { "token": "str", "user": "obj" }
+    }
+  ],
+  "models": {
+    "Item": {
+      "id": "int",
+      "title": "str",
+      "body": "str",
+      "category": "str",
+      "status": "str",
+      "severity": "int",
+      "score": "num",
+      "lat": "num?",
+      "lon": "num?",
+      "meta": "obj",
+      "created_at": "str"
+    }
+  },
+  "websocket": {
+    "path": "/ws",
+    "$comment": "On connect the server sends {kind:'hello'}. Thereafter it pushes record events. The client sends arbitrary text as keepalive; the server must ignore it, not crash.",
+    "server_messages": [
+      { "kind": "hello", "data": { "app": "str" } },
+      { "kind": "item.created", "data": { "id": "int", "title": "str", "category": "str", "severity": "int" } },
+      { "kind": "item.updated", "data": { "id": "int" } }
+    ]
+  }
+}

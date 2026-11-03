@@ -128,3 +128,21 @@ pass. Drills in `PLAYBOOK/06_FAILURE_DRILLS.md`.
 - RAG: MiniLM 384-dim dense retrieval, **weights cached locally** (87 MB)
 - Realtime: websocket push verified end to end
 - Frontend: typechecks clean, builds in ~1 s, served single-port from the API
+
+---
+
+## Building with a partner (parallel frontend + backend)
+
+The interface is frozen in `contract/api_contract.json` and enforced by a script:
+
+```bash
+python scripts/verify_contract.py --base http://127.0.0.1:8000
+```
+
+Exit 0 = safe to merge. Anything else = do not merge, paste the failures back to
+whoever built it. Verified: it catches type mismatches, wrong route ordering,
+HTML error pages, missing fallbacks and non-deterministic seeding.
+
+- `PROMPTS/BACKEND_PROMPT.md` — hand to the AI builder
+- `PROMPTS/FRONTEND_PROMPT.md` — hand to Claude Code
+- `PROMPTS/MERGE_PROTOCOL.md` — the exact git sequence
