@@ -1,0 +1,8 @@
+# Heavy / optional. Install only the ones your PS actually needs.
+torch>=2.4
+torchvision>=0.19
+sentence-transformers>=3.0
+transformers>=4.44
+faster-whisper>=1.0        # speech-to-text
+ultralytics>=8.3           # object detection (YOLO)
+shap>=0.46                 # model explanations for tabular

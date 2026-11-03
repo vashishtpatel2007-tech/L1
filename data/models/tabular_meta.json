@@ -1,0 +1,86 @@
+{
+  "task": "classification",
+  "target": "resolved_late",
+  "features": [
+    "severity",
+    "days_open",
+    "department",
+    "channel",
+    "ward_population",
+    "staff_on_duty",
+    "prior_complaints",
+    "monsoon"
+  ],
+  "numeric": [
+    "severity",
+    "days_open",
+    "ward_population",
+    "staff_on_duty",
+    "prior_complaints",
+    "monsoon"
+  ],
+  "categorical": [
+    "department",
+    "channel"
+  ],
+  "metrics": {
+    "accuracy": 0.7133,
+    "f1_weighted": 0.6881
+  },
+  "importance": [
+    {
+      "feature": "severity",
+      "weight": 0.2305
+    },
+    {
+      "feature": "staff_on_duty",
+      "weight": 0.2197
+    },
+    {
+      "feature": "days_open",
+      "weight": 0.2133
+    },
+    {
+      "feature": "ward_population",
+      "weight": 0.1521
+    },
+    {
+      "feature": "prior_complaints",
+      "weight": 0.0855
+    },
+    {
+      "feature": "monsoon",
+      "weight": 0.0249
+    },
+    {
+      "feature": "department_pwd",
+      "weight": 0.0194
+    },
+    {
+      "feature": "channel_web",
+      "weight": 0.0169
+    },
+    {
+      "feature": "department_sanitation",
+      "weight": 0.0108
+    },
+    {
+      "feature": "channel_whatsapp",
+      "weight": 0.0107
+    },
+    {
+      "feature": "department_education",
+      "weight": 0.0071
+    },
+    {
+      "feature": "department_health",
+      "weight": 0.0041
+    }
+  ],
+  "n_train": 2400,
+  "n_test": 600,
+  "classes": [
+    "0",
+    "1"
+  ]
+}

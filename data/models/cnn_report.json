@@ -1,0 +1,47 @@
+{
+  "val_acc": 0.8519,
+  "per_class_acc": {
+    "diseased": 0.875,
+    "healthy": 0.737,
+    "waterlogged": 0.947
+  },
+  "classes": [
+    "diseased",
+    "healthy",
+    "waterlogged"
+  ],
+  "arch": "resnet18",
+  "epochs": 5,
+  "history": [
+    {
+      "epoch": 1,
+      "train_acc": 0.4352,
+      "val_acc": 0.6667,
+      "train_loss": 1.0753
+    },
+    {
+      "epoch": 2,
+      "train_acc": 0.5509,
+      "val_acc": 0.6852,
+      "train_loss": 0.9722
+    },
+    {
+      "epoch": 3,
+      "train_acc": 0.6991,
+      "val_acc": 0.7407,
+      "train_loss": 0.8861
+    },
+    {
+      "epoch": 4,
+      "train_acc": 0.7685,
+      "val_acc": 0.8148,
+      "train_loss": 0.8336
+    },
+    {
+      "epoch": 5,
+      "train_acc": 0.8009,
+      "val_acc": 0.8519,
+      "train_loss": 0.8255
+    }
+  ]
+}
