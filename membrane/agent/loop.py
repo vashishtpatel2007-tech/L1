@@ -87,6 +87,14 @@ SENSORS
   over `depth_ahead` whenever the two disagree.
 - `collided` true means you touched something and were pushed back 0.1 m.
 
+BEFORE EVERY OTHER CONSIDERATION, ASK: CAN I GRASP NOW?
+If the item the command names is ahead of you and its base is below about row
+430 -- or it is large in the lower part of the frame and roughly centred -- call
+`pickup` THIS STEP. Not after one more nudge, not after re-centring: now.
+A failed `pickup` costs one step and tells you to come closer. Standing next to
+the thing you were sent to fetch and turning instead costs the entire run. The
+same applies when carrying: once the platform fills the lower frame, call `drop`.
+
 HOW TO ACT WELL
 - AT MOST ONE TURN, THEN MOVE. If your previous action was a turn and you can
   see what you want at all, your next action is a move -- even if it is not
@@ -103,6 +111,10 @@ HOW TO ACT WELL
   frame holds things but none of them is the one the command names.
 - If your own reason says you can see it, your action must act on it. Reporting
   the target and then sweeping past it is a contradiction.
+- ONCE YOU RULE SOMETHING OUT, DO NOT WALK TOWARDS IT. If you can see an item
+  and have decided it is not the one named, it is scenery: do not approach it,
+  do not inspect it more closely, and do not let it be the reason you move. Turn
+  and look elsewhere instead.
 - The room deliberately contains items that share an appearance, so a loose
   command can fit more than one of them. Read the command for every attribute it
   gives and use all of them together. If two items still fit equally well, pick
@@ -437,6 +449,7 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
     budget_stop = False
     blind_turns = 0
     turn_streak = 0          # consecutive turns with no move in between
+    steps_since_pickup_try = 0
     memory: dict[str, Any] = {}
     history: list[str] = []
     finished_reason = "max_steps"
@@ -452,6 +465,10 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
             f"holding {str(st['holding']).lower()} | depth_ahead {depth} | "
             f"collisions {st['retry_count']} | consecutive turns {turn_streak}"
         )
+        if not st["holding"] and steps_since_pickup_try >= 3:
+            status += ("\n\nYou have not attempted a grasp for several steps. If what "
+                       "you want is anywhere near the bottom of this frame, call pickup "
+                       "now -- a failed attempt costs one step and tells you to close in.")
         # Asking politely in the system prompt does not work: a run spent 18 of
         # 20 steps turning a few degrees at a time, re-centring forever and
         # never closing. Telling the model what it has just been doing, in the
@@ -459,10 +476,15 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
         # actions -- it says nothing about any object.
         if turn_streak >= 2:
             status += (
-                f"\n\nSTOP TURNING. You have turned {turn_streak} times in a row "
-                f"without moving, which is wasting the run. Whatever is in view is "
-                f"already close enough to the centre to drive at. Your next action "
-                f"MUST be move, with a distance taken from the base-row estimate."
+                f"\n\nYou have turned {turn_streak} times in a row. Small repeated "
+                f"adjustments waste the run. Do ONE of these now:\n"
+                f"  - if the thing the command names is close and ahead: call "
+                f"pickup NOW, even if it is not perfectly centred.\n"
+                f"  - if it is in view but further off: MOVE at it, using the "
+                f"base-row estimate.\n"
+                f"  - if it is NOT in view: sweep a full {SWEEP_DEG} degrees in one "
+                f"turn to bring new floor into frame. Do not nudge by 10 or 20 "
+                f"degrees, and do not approach something you have already ruled out."
             )
 
         # Nothing in view -> rotate without spending a model call. Capped so a
@@ -530,6 +552,7 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
             result = {"error": "unknown tool"}
 
         turn_streak = turn_streak + 1 if tool == "turn" else 0
+        steps_since_pickup_try = 0 if tool == "pickup" else steps_since_pickup_try + 1
 
         log.log_step(tool, args, result, frame_rel, thinking, pose=st)
         history.append(f"{step}: {tool}({json.dumps(args)}) -> {json.dumps(result)}")
@@ -605,7 +628,8 @@ def main() -> None:
                     help="halt before any call that would push CUMULATIVE spend "
                          "past this. Brief targets $40 with an alert at $30.")
     ap.add_argument("--mock", action="store_true", help="free CV policy; no API calls")
-    ap.add_argument("--max-steps", type=int, default=35, help="brief: 25 soft, 60 hard")
+    ap.add_argument("--max-steps", type=int, default=32,
+                    help="brief: 25 soft target, 60 hard stop")
     ap.add_argument("--obstacles", action="store_true", help="stretch goal: blocked path")
     ap.add_argument("--run-id", default=None)
     a = ap.parse_args()

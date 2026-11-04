@@ -324,7 +324,7 @@ class AgentRunBody(BaseModel):
     command: str
     provider: str = "gemini"
     model: str = ""
-    max_steps: int = 20
+    max_steps: int = 32
     rpm: int = 12
     obstacles: bool = False
 
