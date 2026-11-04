@@ -30,7 +30,10 @@ from .firewall import (
     assert_prompt_is_clean,
     sanitize,
 )
-from .llm import Claude, image_block
+from .env import load as load_env
+from .vlm import available as vlm_available
+from .vlm import build as build_vlm
+from .vlm import cost_usd
 from .runlog import RunLog
 
 ENGINE = "http://127.0.0.1:8080"
@@ -93,18 +96,48 @@ HOW TO ACT WELL
   gives and use all of them together. If two items still fit equally well, pick
   the one you can reach most directly and COMMIT to it. Switching targets
   part-way is the worst outcome: it wastes steps and costs directness marks.
-- Once the target is identified, centre it, then close distance in decisive
-  moves using the base-row estimate. Leave roughly 0.4 m before picking up.
+- RE-CHECK THE TARGET IN EVERY FRAME. After each move it will have shifted in
+  the image. If its centre has drifted more than about 60 pixels from column 320,
+  turn to re-centre BEFORE moving again. Driving forward on a stale heading is
+  the most common way to sail straight past the target.
+- Close distance decisively using the base-row estimate: move the estimated range
+  minus 0.4 m in one go. Repeated 0.1 m nudges waste the step budget and cost
+  directness marks. Only use small steps once you are inside about 0.7 m.
 - `pickup` succeeds only within 0.5 m and within 30 degrees of straight ahead.
   If it fails, adjust and approach again.
 - After a collision, turn away before moving again. Three collisions end the run.
 - While carrying, the held item occupies the lower middle of the frame. The
-  delivery patch is a flat marked area on the floor; drive onto it, then release.
+  delivery patch is a low raised platform on the floor, brightly coloured with a
+  pale rim, and it sits somewhere you have probably not looked yet.
+- THE CARRY LEG IS WHERE RUNS ARE LOST. Do not drive forward hoping the platform
+  is that way. If you cannot actually SEE the platform in the current frame, say
+  so in your reason and TURN to search -- sweep in steps of about 50 degrees
+  until it appears. Only drive once it is genuinely visible and centred.
+- Never claim in your reason that you can see something you cannot. An honest
+  "the platform is not in view, sweeping" is worth far more than a guess, because
+  the next decision is made from what you wrote.
+- Once the platform fills the lower frame and its near edge is close to the
+  bottom of the image, you are on it; release there.
 - Call `finish` only when you have released the item on the patch, or when you
   are certain you cannot continue.
 
-Think briefly before each tool call: say what you can see and why you chose the
-action. That reasoning is recorded."""
+Every tool call takes a `reason`. Fill it with what you actually see in THIS
+frame -- what is present, roughly where in the image it sits, your range estimate
+from its base row -- and why the action follows. Write it before deciding, not
+after; it is the record judges read."""
+
+#: Every tool requires a `reason`. Forcing a tool call makes a model emit the
+#: call and nothing else -- no reasoning text at all -- which both costs the
+#: "image-driven agent" marks (judges read the logs for it) and measurably
+#: degrades the decisions, because nothing makes the model look before it acts.
+#: Making the observation part of the call's signature fixes both at once.
+REASON_FIELD = {
+    "reason": {
+        "type": "string",
+        "description": "One sentence: what you can see in this frame, roughly where it sits "
+                       "in the image, and why this action follows from it.",
+    }
+}
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -112,9 +145,11 @@ TOOLS: list[dict[str, Any]] = [
         "description": "Rotate in place. Positive degrees turn right, negative turn left.",
         "input_schema": {
             "type": "object",
-            "properties": {"degrees": {"type": "number",
-                                       "description": "Degrees to rotate, -180 to 180."}},
-            "required": ["degrees"],
+            "properties": {
+                "degrees": {"type": "number", "description": "Degrees to rotate, -180 to 180."},
+                **REASON_FIELD,
+            },
+            "required": ["degrees", "reason"],
         },
     },
     {
@@ -123,31 +158,35 @@ TOOLS: list[dict[str, Any]] = [
                        "Stops early if something is struck.",
         "input_schema": {
             "type": "object",
-            "properties": {"distance": {"type": "number",
-                                        "description": "Metres to travel, -3 to 5."}},
-            "required": ["distance"],
+            "properties": {
+                "distance": {"type": "number", "description": "Metres to travel, -3 to 5."},
+                **REASON_FIELD,
+            },
+            "required": ["distance", "reason"],
         },
     },
     {
         "name": "pickup",
         "description": "Attempt to grasp whatever is directly ahead and within reach. "
                        "Reports only whether it succeeded.",
-        "input_schema": {"type": "object", "properties": {}},
+        "input_schema": {"type": "object", "properties": {**REASON_FIELD}, "required": ["reason"]},
     },
     {
         "name": "drop",
         "description": "Release what is currently held and report whether it came to rest "
                        "on the delivery patch.",
-        "input_schema": {"type": "object", "properties": {}},
+        "input_schema": {"type": "object", "properties": {**REASON_FIELD}, "required": ["reason"]},
     },
     {
         "name": "finish",
         "description": "End the run and state the outcome.",
         "input_schema": {
             "type": "object",
-            "properties": {"outcome": {"type": "string",
-                                       "description": "What happened, in one sentence."}},
-            "required": ["outcome"],
+            "properties": {
+                "outcome": {"type": "string", "description": "What happened, in one sentence."},
+                **REASON_FIELD,
+            },
+            "required": ["outcome", "reason"],
         },
     },
 ]
@@ -274,8 +313,10 @@ def _mock_decide(jpg: bytes, st: dict[str, Any], depth: float | None,
 
 
 # ------------------------------------------------------------------ loop ----
-def run(command: str, model: str, mock: bool, max_steps: int,
-        obstacles: bool, run_id: str | None = None) -> dict[str, Any]:
+def run(command: str, model: str | None, mock: bool, max_steps: int,
+        obstacles: bool, run_id: str | None = None,
+        provider: str = "anthropic", rpm: int | None = None) -> dict[str, Any]:
+    load_env()
     assert_prompt_is_clean(SYSTEM, TOOLS)          # startup leakage gate
 
     run_id = run_id or time.strftime("%H%M%S")
@@ -283,7 +324,8 @@ def run(command: str, model: str, mock: bool, max_steps: int,
     log = RunLog(run_dir, command)
 
     _post("/admin/reset", {"command": command, "obstacles": obstacles, "record": True})
-    claude = Claude(model=model, mock=mock)
+    vlm = None if mock else build_vlm(provider, model, rpm=rpm)
+    spend = {"input": 0, "output": 0, "cache_read": 0, "calls": 0, "usd": 0.0}
     memory: dict[str, Any] = {}
     history: list[str] = []
     finished_reason = "max_steps"
@@ -305,18 +347,20 @@ def run(command: str, model: str, mock: bool, max_steps: int,
             memory["last_tool"] = tool
         else:
             # Only the newest frame is an image; everything older is one text line.
-            user_content: list[dict[str, Any]] = [image_block(jpg)]
             hist = "\n".join(history[-14:])
-            user_content.append({"type": "text", "text":
-                f"COMMAND: {command}\n{status}\n\nPREVIOUS STEPS:\n{hist or '(none)'}"})
-            messages = [{"role": "user", "content": user_content}]
-            assert_no_engine_identifiers(
-                [c for c in user_content if c.get("type") == "text"], f"step {step} user text")
-            out = claude.call(SYSTEM, TOOLS, messages)
-            if not out["tool_name"]:
-                history.append(f"{step}: model returned no tool call")
+            user_text = f"COMMAND: {command}\n{status}\n\nPREVIOUS STEPS:\n{hist or '(none)'}"
+            assert_no_engine_identifiers(user_text, f"step {step} user text")
+            d = vlm.decide(SYSTEM, TOOLS, jpg, user_text)
+            spend["calls"] += 1
+            for k in ("input", "output", "cache_read"):
+                spend[k] += d.usage.get(k, 0)
+            spend["usd"] += cost_usd(vlm, d.usage)
+            if d.error or not d.tool:
+                history.append(f"{step}: model returned no tool call ({d.error or 'empty'})")
                 continue
-            tool, args, thinking = out["tool_name"], out["tool_input"] or {}, out["text"]
+            tool, args = d.tool, d.args or {}
+            # The reason lives in the call itself; free-form text is a bonus.
+            thinking = (args.pop("reason", "") or d.text or "").strip()
 
         # ---- execute ----
         if tool == "finish":
@@ -345,25 +389,57 @@ def run(command: str, model: str, mock: bool, max_steps: int,
             break
 
     outcome = _get("/admin/outcome")
-    spend = claude.commit_spend() if not mock else {"total_usd": Claude.total_spend()}
+    total = _commit_spend(spend["usd"]) if not mock else _read_spend()
     log.finish(finished_reason, {
         "engine_outcome": outcome,
-        "api_calls": claude.usage.calls,
-        "input_tokens": claude.usage.input_tokens,
-        "output_tokens": claude.usage.output_tokens,
-        "cache_read_tokens": claude.usage.cache_read,
-        "run_cost_usd": round(claude.usage.cost_usd, 4),
-        "cumulative_usd": spend.get("total_usd"),
+        "provider": "mock" if mock else vlm.name,
+        "model": "mock" if mock else vlm.model,
+        "api_calls": spend["calls"],
+        "input_tokens": spend["input"],
+        "output_tokens": spend["output"],
+        "cache_read_tokens": spend["cache_read"],
+        "run_cost_usd": round(spend["usd"], 4),
+        "cumulative_usd": total,
     })
     return {"run_dir": str(run_dir), "steps": log.step, "reason": finished_reason,
-            "engine_outcome": outcome, "cost_usd": round(claude.usage.cost_usd, 4),
-            "cumulative_usd": spend.get("total_usd")}
+            "engine_outcome": outcome, "cost_usd": round(spend["usd"], 4),
+            "cumulative_usd": total,
+            "provider": "mock" if mock else vlm.name,
+            "model": "mock" if mock else vlm.model}
+
+
+SPEND_FILE = RUNS / "spend.json"
+
+
+def _read_spend() -> float:
+    try:
+        return float(json.loads(SPEND_FILE.read_text()).get("total_usd", 0.0))
+    except Exception:
+        return 0.0
+
+
+def _commit_spend(delta: float) -> float:
+    total = round(_read_spend() + delta, 4)
+    SPEND_FILE.parent.mkdir(parents=True, exist_ok=True)
+    runs = 0
+    try:
+        runs = int(json.loads(SPEND_FILE.read_text()).get("runs", 0))
+    except Exception:
+        pass
+    SPEND_FILE.write_text(json.dumps(
+        {"total_usd": total, "runs": runs + 1,
+         "updated": time.strftime("%Y-%m-%d %H:%M:%S")}, indent=2))
+    return total
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--command", required=True)
-    ap.add_argument("--model", default="claude-sonnet-5-5")
+    ap.add_argument("--provider", default="anthropic", choices=["anthropic", "gemini", "groq"],
+                    help="anthropic ships; gemini/groq are for free validation")
+    ap.add_argument("--model", default=None, help="provider default if omitted")
+    ap.add_argument("--rpm", type=int, default=None,
+                    help="requests per minute ceiling; 0 disables pacing")
     ap.add_argument("--mock", action="store_true", help="free CV policy; no API calls")
     ap.add_argument("--max-steps", type=int, default=35, help="brief: 25 soft, 60 hard")
     ap.add_argument("--obstacles", action="store_true", help="stretch goal: blocked path")
@@ -371,9 +447,12 @@ def main() -> None:
     a = ap.parse_args()
 
     try:
-        res = run(a.command, a.model, a.mock, a.max_steps, a.obstacles, a.run_id)
+        res = run(a.command, a.model, a.mock, a.max_steps, a.obstacles, a.run_id,
+                  a.provider, a.rpm)
     except LeakageError as e:
         raise SystemExit(f"LEAKAGE GATE FAILED -- run aborted: {e}")
+    except RuntimeError as e:
+        raise SystemExit(f"{e}\n\nproviders available: {vlm_available()}")
 
     print(json.dumps(res, indent=2))
 

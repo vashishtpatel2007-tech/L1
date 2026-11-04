@@ -81,9 +81,12 @@ class Sim:
             mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, n)
             for n in ("robot_body", "robot_nose")
         }
+        # The drop zone is a low platform the robot drives ONTO, so contact with
+        # it is expected and must never count as a collision.
         self.ignore_geoms = {
-            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, n) for n in ("floor", "dropzone")
-        }
+            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, n)
+            for n in ("floor", "dropzone", "dropzone_rim")
+        } - {-1}
         # MuJoCo filters contacts between two bodies that both have no degrees of
         # freedom. The robot is a mocap body and the walls are static world geoms,
         # so no contact is EVER generated for them and the robot drives straight

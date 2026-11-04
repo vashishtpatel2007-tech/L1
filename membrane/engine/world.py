@@ -189,8 +189,16 @@ def build_xml(scene: Scene) -> str:
     <light directional="true" dir="0.6 0.6 -0.5" diffuse="0.15 0.15 0.15" castshadow="false"/>
 
     <geom name="floor" type="plane" size="{ROOM_HALF} {ROOM_HALF} 0.1" material="floormat"/>
-    <geom name="dropzone" type="box" pos="{dz_x} {dz_y} 0.006"
-          size="{DROP_ZONE_HALF} {DROP_ZONE_HALF} 0.006" rgba="0.10 0.80 0.25 1"/>
+    <!-- A low PLATFORM, not a floor decal. The brief allows "a coloured square
+         or flat platform". A 12 mm decal is a few pixels tall from across the
+         room through a camera 0.5 m up, so a carrying agent cannot find it and
+         drives blind; raising it to 70 mm gives it visible vertical faces while
+         keeping it something the robot drives onto rather than over. -->
+    <geom name="dropzone" type="box" pos="{dz_x} {dz_y} 0.035"
+          size="{DROP_ZONE_HALF} {DROP_ZONE_HALF} 0.035" rgba="0.10 0.78 0.25 1"/>
+    <geom name="dropzone_rim" type="box" pos="{dz_x} {dz_y} 0.074"
+          size="{DROP_ZONE_HALF} {DROP_ZONE_HALF} 0.004" rgba="0.92 0.97 0.30 1"
+          contype="0" conaffinity="0"/>
     {"".join(walls)}
     {"".join(body_xml)}
 
