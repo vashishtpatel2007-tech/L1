@@ -39,7 +39,7 @@ RETRY_CODES = {408, 429, 500, 502, 503, 504, 529}
 #: (5-15 rpm) and a 429 mid-run is indistinguishable from a broken agent, so the
 #: loop paces itself rather than discovering the limit the hard way.
 DEFAULT_RPM = {"anthropic": 0, "gemini": 10, "groq": 25,
-               "local": 0, "openrouter": 20}          # 0 = unpaced
+               "qwen": 30, "local": 0, "openrouter": 20}   # 0 = unpaced
 
 _last_call: dict[str, float] = {}
 
@@ -372,6 +372,73 @@ class OpenRouterVLM:
         return d
 
 
+# ------------------------------------------------------------ qwen hosted --
+class QwenVLM:
+    """Qwen-VL through Alibaba's Model Studio (DashScope).
+
+    The hosted models are far larger than anything that fits on this laptop --
+    qwen-vl-max against a local 7B -- and the gap shows exactly where the local
+    model is weakest: holding a multi-step plan together across the carry leg.
+    Local stays useful for unlimited iteration; this is for runs that need to
+    actually finish.
+
+    DashScope exposes an OpenAI-compatible endpoint, so this is the same wire
+    format as Groq and OpenRouter with a different base URL.
+    """
+
+    name = "qwen"
+    env_key = "DASHSCOPE_API_KEY"
+    # USD per million tokens, for budget tracking only
+    prices = {"qwen-vl-max": (0.80, 3.20), "qwen-vl-plus": (0.21, 0.63)}
+
+    #: International endpoint. Mainland accounts use dashscope.aliyuncs.com;
+    #: override with DASHSCOPE_BASE_URL rather than editing this.
+    BASE = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+
+    def __init__(self, model: str = "qwen-vl-max", max_tokens: int = 700,
+                 rpm: int | None = None) -> None:
+        self.model, self.max_tokens = model, max_tokens
+        self.rpm = 30 if rpm is None else rpm
+        self.key = os.environ.get(self.env_key) or os.environ.get("QWEN_API_KEY", "")
+        self.base = os.environ.get("DASHSCOPE_BASE_URL", self.BASE).rstrip("/")
+
+    def decide(self, system: str, tools: list[dict], image_jpeg: bytes, text: str) -> Decision:
+        oa_tools = [{"type": "function", "function": {
+            "name": t["name"], "description": t.get("description", ""),
+            "parameters": t.get("input_schema") or {"type": "object", "properties": {}},
+        }} for t in tools]
+        b64 = base64.b64encode(image_jpeg).decode()
+        body = {
+            "model": self.model, "max_tokens": self.max_tokens, "tools": oa_tools,
+            "tool_choice": "required", "temperature": 0.2,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                    {"type": "text", "text": text},
+                ]},
+            ],
+        }
+        _pace(self.name, self.rpm)
+        out = _post(f"{self.base}/chat/completions",
+                    {"Authorization": f"Bearer {self.key}"}, body)
+        d = Decision(tool=None, provider=self.name, model=self.model)
+        msg = (out.get("choices") or [{}])[0].get("message", {})
+        d.text = msg.get("content") or ""
+        for call in msg.get("tool_calls") or []:
+            fn = call.get("function", {})
+            d.tool = fn.get("name")
+            raw = fn.get("arguments")
+            try:
+                d.args = raw if isinstance(raw, dict) else json.loads(raw or "{}")
+            except json.JSONDecodeError:
+                d.args = {}
+        u = out.get("usage", {})
+        d.usage = {"input": int(u.get("prompt_tokens", 0)),
+                   "output": int(u.get("completion_tokens", 0)), "cache_read": 0}
+        return d
+
+
 class FallbackVLM:
     """Tries several models in order, moving on when one is unavailable.
 
@@ -415,7 +482,7 @@ class FallbackVLM:
 
 
 PROVIDERS = {"anthropic": AnthropicVLM, "gemini": GeminiVLM, "groq": GroqVLM,
-             "local": LocalVLM, "openrouter": OpenRouterVLM}
+             "qwen": QwenVLM, "local": LocalVLM, "openrouter": OpenRouterVLM}
 #: Gemini's default is a FALLBACK CHAIN, not one model. Free tiers hand out
 #: per-model 429s and the newer previews return 503 under load, so a single
 #: default leaves the console dead on arrival for no reason to do with the agent.
@@ -423,6 +490,7 @@ DEFAULT_MODEL = {
     "anthropic": "claude-sonnet-5-5",
     "gemini": "gemini-flash-lite-latest,gemini-3.6-flash,gemini-2.5-flash-lite",
     "groq": "meta-llama/llama-4-scout-17b-16e-instruct",
+    "qwen": "qwen-vl-max,qwen-vl-plus",
     "local": "qwen2.5vl:7b",
     "openrouter": "meta-llama/llama-3.2-11b-vision-instruct:free",
 }
@@ -478,6 +546,8 @@ def available() -> dict[str, bool]:
             out[name] = _ollama_up()
         elif name == "gemini":
             out[name] = bool(os.environ.get(cls.env_key) or os.environ.get("GOOGLE_API_KEY"))
+        elif name == "qwen":
+            out[name] = bool(os.environ.get(cls.env_key) or os.environ.get("QWEN_API_KEY"))
         else:
             out[name] = bool(os.environ.get(cls.env_key))
     return out

@@ -797,8 +797,8 @@ def _commit_spend(delta: float) -> float:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--command", required=True)
-    ap.add_argument("--provider", default="anthropic", choices=["anthropic", "gemini", "groq", "local", "openrouter"],
-                    help="anthropic ships; local/gemini/groq/openrouter are for free validation")
+    ap.add_argument("--provider", default="anthropic", choices=["anthropic", "gemini", "groq", "qwen", "local", "openrouter"],
+                    help="anthropic ships; qwen/local/gemini/groq/openrouter are for validation")
     ap.add_argument("--model", default=None, help="provider default if omitted")
     ap.add_argument("--rpm", type=int, default=None,
                     help="requests per minute ceiling; 0 disables pacing")
