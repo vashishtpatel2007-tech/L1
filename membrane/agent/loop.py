@@ -32,6 +32,7 @@ from .firewall import (
     sanitize,
 )
 from .env import load as load_env
+from .vlm import Decision
 from .vlm import available as vlm_available
 from .vlm import build as build_vlm
 from .vlm import cost_usd
@@ -484,6 +485,10 @@ def _mock_decide(jpg: bytes, st: dict[str, Any], depth: float | None,
 #: full circle takes five looks instead of eight and nothing can slip between.
 SWEEP_DEG = 70
 MAX_BLIND_TURNS = 6
+#: Three empty replies in a row is a dead endpoint, not bad luck. Stopping
+#: there turns twenty minutes of silent retrying into an immediate, honest
+#: message about the quota.
+MAX_CONSECUTIVE_FAILURES = 3
 
 
 def model_calls_used(spend: dict[str, Any]) -> int:
@@ -519,6 +524,7 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
     budget_stop = False
     blind_turns = 0
     turn_streak = 0          # consecutive turns with no move in between
+    consecutive_failures = 0
     steps_since_pickup_try = 0
     # Landmark memory. Once the model has reported the patch at a pixel column,
     # its world bearing follows from the robot's OWN heading and the lens
@@ -647,14 +653,36 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
             user_text = f"COMMAND: {command}\n{status}\n\nPREVIOUS STEPS:\n{hist or '(none)'}"
             assert_no_engine_identifiers(user_text, f"step {step} user text")
             log.progress("Waiting for vision model", step)
-            d = vlm.decide(SYSTEM, TOOLS, jpg, user_text)
-            spend["calls"] += 1
-            for k in ("input", "output", "cache_read"):
-                spend[k] += d.usage.get(k, 0)
-            spend["usd"] += cost_usd(vlm, d.usage)
+            try:
+                d = vlm.decide(SYSTEM, TOOLS, jpg, user_text)
+            except Exception as e:                      # transport died entirely
+                d = Decision(tool=None, error=f"{type(e).__name__}: {str(e)[:160]}")
+
+            produced = bool(d.usage.get("input") or d.usage.get("output"))
+            if produced:
+                spend["calls"] += 1
+                for k in ("input", "output", "cache_read"):
+                    spend[k] += d.usage.get(k, 0)
+                spend["usd"] += cost_usd(vlm, d.usage)
+
             if d.error or not d.tool:
-                history.append(f"{step}: model returned no tool call ({d.error or 'empty'})")
+                # A call that returned nothing cost nothing and decided nothing,
+                # so it must not consume the allowance. One run burned 26 calls
+                # against a 26-call budget without a single token coming back,
+                # logged four steps, and reported "max_steps" -- which reads as
+                # the agent failing when the quota was simply spent.
+                consecutive_failures += 1
+                history.append(f"{step}: no tool call ({d.error or 'empty response'})")
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    finished_reason = "model_unreachable"
+                    log.finish(finished_reason, {
+                        "detail": (d.error or "empty response")[:300],
+                        "note": "the model could not be reached; this is not an "
+                                "agent failure. Check the API quota or key.",
+                    })
+                    break
                 continue
+            consecutive_failures = 0
             tool, args = d.tool, d.args or {}
             # The reason lives in the call itself; free-form text is a bonus.
             thinking = (args.pop("reason", "") or d.text or "").strip()
@@ -733,6 +761,9 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
            "cumulative_usd": total,
            "provider": "mock" if mock else vlm.name,
            "model": "mock" if mock else vlm.model}
+    if finished_reason == "model_unreachable":
+        res["error"] = ("the model could not be reached -- API quota or key. "
+                        "This is not an agent failure.")
     if budget is not None:
         res["budget_usd"] = budget
         res["budget_remaining_usd"] = round(budget - total, 4)
