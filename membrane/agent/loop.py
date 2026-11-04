@@ -138,6 +138,10 @@ HOW TO ACT WELL
   ONLY thing you are looking for is the delivery platform.
 - The delivery platform is a low raised slab, brightly coloured with a pale rim,
   and it sits somewhere you have probably not looked yet.
+- REPORT THE PATCH WHENEVER YOU SEE IT, even while still fetching, by passing
+  `patch_at_column` with its pixel column. The robot remembers which way it lies
+  and will tell you the exact turn to face it again later. One report saves a
+  whole blind search after you have picked the item up.
 - THE CARRY LEG IS WHERE RUNS ARE LOST, in one of two ways. Driving forward
   hoping the platform is that way, or sweeping straight past it after spotting
   it. If it is not in frame, sweep. If it IS in frame, immediately turn by the
@@ -165,7 +169,14 @@ REASON_FIELD = {
         "type": "string",
         "description": "One sentence: what you can see in this frame, roughly where it sits "
                        "in the image, and why this action follows from it.",
-    }
+    },
+    "patch_at_column": {
+        "type": "number",
+        "description": "If the marked delivery patch is anywhere in this frame, its "
+                       "horizontal pixel column, 0 to 639. Omit entirely when it is "
+                       "not visible. Reporting it lets the robot remember which way "
+                       "it lies, so it never has to be hunted for twice.",
+    },
 }
 
 TOOLS: list[dict[str, Any]] = [
@@ -451,6 +462,11 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
     blind_turns = 0
     turn_streak = 0          # consecutive turns with no move in between
     steps_since_pickup_try = 0
+    # Landmark memory. Once the model has reported the patch at a pixel column,
+    # its world bearing follows from the robot's OWN heading and the lens
+    # geometry, and stays usable from anywhere in the room. Without it the carry
+    # leg is a blind search that costs up to nine calls every single time.
+    patch_bearing: float | None = None
     memory: dict[str, Any] = {}
     navigator = ReturnNavigator()
     history: list[str] = []
@@ -470,6 +486,17 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
             f"holding {str(st['holding']).lower()} | depth_ahead {depth} | "
             f"collisions {st['retry_count']} | consecutive turns {turn_streak}"
         )
+        if st["holding"] and patch_bearing is not None:
+            rel = ((patch_bearing - st["heading"] + 180.0) % 360.0) - 180.0
+            if abs(rel) <= 25:
+                status += ("\n\nYou are facing the direction you last saw the delivery "
+                           "patch. Drive forward; do not turn away.")
+            else:
+                status += (f"\n\nYou previously reported the delivery patch at world "
+                           f"bearing {patch_bearing:.0f} degrees. You are now facing "
+                           f"{st['heading']:.0f}. Turn {rel:+.0f} degrees to face it "
+                           f"again, then drive. Do not sweep at random.")
+
         if not st["holding"] and steps_since_pickup_try >= 3:
             status += ("\n\nYou have not attempted a grasp for several steps. If what "
                        "you want is anywhere near the bottom of this frame, call pickup "
@@ -561,6 +588,13 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
 
         turn_streak = turn_streak + 1 if tool == "turn" else 0
         steps_since_pickup_try = 0 if tool == "pickup" else steps_since_pickup_try + 1
+
+        seen_u = args.pop("patch_at_column", None)
+        if seen_u is not None:
+            try:
+                patch_bearing = (st["heading"] + (float(seen_u) - 320.0) / 640.0 * 90.0) % 360.0
+            except (TypeError, ValueError):
+                pass
 
         log.log_step(tool, args, result, frame_rel, thinking, pose=st)
         history.append(f"{step}: {tool}({json.dumps(args)}) -> {json.dumps(result)}")

@@ -13,7 +13,7 @@
       "delivered": "red sphere",
       "steps": 6,
       "verdict": "pass",
-      "seconds": 0.6,
+      "seconds": 0.5,
       "cost_usd": 0.0
     },
     {
@@ -49,7 +49,7 @@
       "delivered": "blue cylinder",
       "steps": 6,
       "verdict": "pass",
-      "seconds": 0.5,
+      "seconds": 0.4,
       "cost_usd": 0.0
     },
     {
@@ -58,7 +58,7 @@
       "delivered": "yellow cone",
       "steps": 6,
       "verdict": "pass",
-      "seconds": 0.6,
+      "seconds": 0.5,
       "cost_usd": 0.0
     },
     {
@@ -67,7 +67,7 @@
       "delivered": "red sphere",
       "steps": 6,
       "verdict": "pass",
-      "seconds": 0.5,
+      "seconds": 0.4,
       "cost_usd": 0.0
     },
     {
@@ -103,7 +103,7 @@
       "delivered": "yellow cone",
       "steps": 6,
       "verdict": "pass",
-      "seconds": 0.6,
+      "seconds": 0.5,
       "cost_usd": 0.0
     },
     {
@@ -112,7 +112,7 @@
       "delivered": "blue cube",
       "steps": 6,
       "verdict": "pass",
-      "seconds": 0.5,
+      "seconds": 0.4,
       "cost_usd": 0.0
     },
     {
@@ -121,7 +121,7 @@
       "delivered": "blue cube",
       "steps": 6,
       "verdict": "pass",
-      "seconds": 0.5,
+      "seconds": 0.4,
       "cost_usd": 0.0
     },
     {
@@ -148,7 +148,7 @@
       "delivered": "red sphere",
       "steps": 6,
       "verdict": "pass",
-      "seconds": 0.5,
+      "seconds": 0.4,
       "cost_usd": 0.0
     }
   ]

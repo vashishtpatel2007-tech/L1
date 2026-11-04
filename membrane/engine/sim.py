@@ -42,6 +42,7 @@ MOVE_SPEED = 1.0          # m/s
 TURN_SPEED = 90.0         # deg/s
 BACKOFF = 0.1             # m
 MAX_RETRIES = 3
+PROGRESS_RESET = 0.25     # m of real travel that counts as escaping a blockage
 BLOCK_SECONDS = 2.0
 # A carried object must clear the camera's near plane. The camera sits
 # CAM_FWD_OFFSET ahead of the robot centre at CAM_HEIGHT; an object whose radius
@@ -115,6 +116,7 @@ class Sim:
 
         self.state: State = "Idle"
         self.retries = 0
+        self.blocked_since: float | None = None
         self.holding: str | None = None
         self.video_frames: list[np.ndarray] = []
         self.outcome = RunOutcome()
@@ -176,10 +178,18 @@ class Sim:
         explicit distance queries for static geometry, contact list for objects.
         """
         body_geom = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "robot_body")
+        probes = [body_geom]
+        if self.holding:
+            # Whatever is being carried moves with the robot, so it is part of
+            # the footprint. Without this it slides through walls.
+            bid = self.obj_bids[self.holding]
+            start = self.model.body_geomadr[bid]
+            probes += list(range(start, start + self.model.body_geomnum[bid]))
         for gi in self.static_obstacles:
-            dist = mujoco.mj_geomDistance(self.model, self.data, body_geom, gi, 0.2, None)
-            if dist <= self.STATIC_MARGIN:
-                return True
+            for pg in probes:
+                dist = mujoco.mj_geomDistance(self.model, self.data, pg, gi, 0.25, None)
+                if dist <= self.STATIC_MARGIN:
+                    return True
         for i in range(self.data.ncon):
             c = self.data.contact[i]
             g1, g2 = int(c.geom1), int(c.geom2)
@@ -266,6 +276,12 @@ class Sim:
             if self.retries >= MAX_RETRIES:
                 self.state = "Done"
                 self.outcome.result = "fail_collision"
+        elif abs(float(np.dot(np.array([self.x, self.y]) - start,
+                              heading_at_start))) >= PROGRESS_RESET:
+            # Escaped and made real progress, so the robot is no longer stuck.
+            # The three retries the brief allows are for one blocked situation.
+            self.retries = 0
+            self.blocked_since = None
 
         # Measured AFTER the back-off, signed along the heading. Computing it
         # before the back-off overstates progress by exactly BACKOFF, and an
@@ -273,6 +289,15 @@ class Sim:
         # agent reasons from a number that did not happen.
         delta = np.array([self.x, self.y]) - start
         travelled = float(np.dot(delta, heading_at_start))
+
+        if not collided and abs(distance) >= 0.2 and abs(travelled) < 0.02:
+            # Commanded to drive and went nowhere: the brief's second Blocked
+            # trigger, "no movement for 2 seconds".
+            self.retries += 1
+            self.state = "Blocked"
+            if self.retries >= MAX_RETRIES:
+                self.state = "Done"
+                self.outcome.result = "fail_collision"
 
         return {
             "collided": collided,
@@ -371,6 +396,7 @@ class Sim:
         mujoco.mj_resetData(self.model, self.data)
         self.state = "Idle"
         self.retries = 0
+        self.blocked_since = None
         self.holding = None
         self.video_frames = []
         self.outcome = RunOutcome()
