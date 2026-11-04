@@ -26,6 +26,7 @@ from __future__ import annotations
 import io
 import queue
 import threading
+from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import FastAPI, HTTPException
@@ -160,6 +161,51 @@ def admin_outcome() -> dict[str, Any]:
     })
 
 
+@app.get("/admin/next_action")
+def admin_next_action(target: str) -> dict[str, Any]:
+    """OPERATOR CONSOLE ONLY. Computes the next oracle action toward `target`
+    from ground truth, so the browser console can animate a scripted fetch one
+    step at a time.
+
+    This is not part of the agent's world. agent/loop.py never calls it, and
+    audit/check_leakage.py fails any run whose log mentions /admin/.
+    """
+    import math
+
+    def job(w: SimWorker) -> dict[str, Any]:
+        sim = w.sim
+        obj = next((o for o in sim.scene.objects if o.label == target), None)
+        if obj is None:
+            return {"done": True, "reason": f"unknown target {target!r}"}
+
+        holding = sim.holding is not None
+        tx, ty = (sim.scene.drop_zone if holding else
+                  tuple(float(v) for v in sim.data.xpos[sim.obj_bids[obj.name]][:2]))
+        standoff = 0.30 if holding else 0.42
+
+        gap = math.hypot(tx - sim.x, ty - sim.y)
+        bearing = math.degrees(math.atan2(-(ty - sim.y), tx - sim.x))
+        rel = ((bearing - sim.heading + 180) % 360) - 180
+
+        if holding and gap <= standoff + 0.06:
+            return {"tool": "drop", "args": {}, "note": "on the patch; releasing"}
+        if not holding and gap <= standoff + 0.06:
+            return {"tool": "pickup", "args": {}, "note": "in reach; grasping"}
+        if abs(rel) > 2.5:
+            return {"tool": "turn", "args": {"degrees": round(rel, 2)},
+                    "note": f"turning {rel:+.1f} deg to line up"}
+        return {"tool": "move", "args": {"distance": round(gap - standoff, 3)},
+                "note": f"closing {gap - standoff:.2f} m"}
+
+    return worker.call(job)
+
+
+@app.get("/admin/targets")
+def admin_targets() -> dict[str, Any]:
+    """Operator console: the labels a scripted fetch can be pointed at."""
+    return worker.call(lambda w: {"targets": [o.label for o in w.sim.scene.objects]})
+
+
 @app.get("/admin/truth")
 def admin_truth() -> dict[str, Any]:
     """DEV ONLY ground truth: object positions and labels.
@@ -202,6 +248,14 @@ def admin_overhead() -> Response:
     buf = io.BytesIO()
     Image.fromarray(arr).save(buf, format="PNG")
     return Response(content=buf.getvalue(), media_type="image/png")
+
+
+@app.get("/", include_in_schema=False)
+def console() -> Response:
+    """Operator console. For driving and watching the robot during development
+    and rehearsal; the agent does not use it."""
+    html = (Path(__file__).parent / "console.html").read_text()
+    return Response(content=html, media_type="text/html")
 
 
 @app.get("/health")

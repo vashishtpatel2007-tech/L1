@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Membrane Fetch — Operator Console</title>
+<style>
+  :root{--bg:#0a0e18;--panel:#121827;--panel2:#1a2234;--line:#26304a;--txt:#e9eef8;
+        --muted:#8e9bb3;--accent:#4f8cff;--good:#22d3a7;--warn:#f0b429;--bad:#f2565b}
+  *{box-sizing:border-box} html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--txt);font:14px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Inter,sans-serif}
+  header{display:flex;align-items:center;gap:14px;padding:10px 18px;border-bottom:1px solid var(--line);
+         background:rgba(10,14,24,.9);position:sticky;top:0;z-index:5;flex-wrap:wrap}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--good)}
+  h1{font-size:15px;margin:0;font-weight:700;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:12px}
+  main{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:14px;max-width:1500px;margin:0 auto}
+  @media(max-width:1000px){main{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px}
+  .panel h2{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--muted);margin:0 0 9px}
+  img{width:100%;border-radius:9px;display:block;background:#000}
+  .row{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+  button{background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:9px;
+         padding:8px 13px;font:inherit;font-weight:600;cursor:pointer}
+  button:hover:not(:disabled){border-color:var(--accent);color:#fff}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  button.go{background:var(--accent);color:#06142e;border-color:transparent}
+  button.warn{background:var(--warn);color:#2a1c00;border-color:transparent}
+  select,input{background:var(--panel2);color:var(--txt);border:1px solid var(--line);
+               border-radius:9px;padding:8px 10px;font:inherit}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:9px}
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  .stat{background:var(--panel2);border-radius:9px;padding:8px 10px}
+  .stat .k{font-size:10px;text-transform:uppercase;letter-spacing:.7px;color:var(--muted)}
+  .stat .v{font-size:17px;font-weight:700;font-family:ui-monospace,Menlo,monospace}
+  #log{height:190px;overflow:auto;background:var(--panel2);border-radius:9px;padding:8px;
+       font:12px/1.65 ui-monospace,Menlo,monospace}
+  #log div{white-space:pre-wrap}
+  .t-turn{color:#9ec5ff}.t-move{color:var(--good)}.t-pickup{color:var(--warn)}
+  .t-drop{color:#c9a7ff}.t-err{color:var(--bad)}.t-sys{color:var(--muted)}
+  .chip{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;
+        border:1px solid var(--line);background:var(--panel2);font-size:12px;font-weight:600}
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="dot"></span>
+  <div><h1>Membrane Fetch — Operator Console</h1>
+       <div class="sub">drives the engine through the same seven endpoints the agent uses</div></div>
+  <span class="chip" id="stateChip" style="margin-left:auto">—</span>
+  <span class="chip" id="holdChip">—</span>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>Robot camera &nbsp;·&nbsp; GET /look &nbsp;·&nbsp; 640×480, 90° FOV</h2>
+    <img id="pov" alt="Robot point of view">
+    <div class="stats" style="margin-top:10px">
+      <div class="stat"><div class="k">heading</div><div class="v" id="sHead">—</div></div>
+      <div class="stat"><div class="k">depth ahead</div><div class="v" id="sDepth">—</div></div>
+      <div class="stat"><div class="k">collisions</div><div class="v" id="sRetry">—</div></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Overhead &nbsp;·&nbsp; operator view only, never sent to the model</h2>
+    <img id="top" alt="Overhead view of the room">
+    <div class="stats" style="margin-top:10px">
+      <div class="stat"><div class="k">x</div><div class="v" id="sX">—</div></div>
+      <div class="stat"><div class="k">y</div><div class="v" id="sY">—</div></div>
+      <div class="stat"><div class="k">steps</div><div class="v" id="sSteps">0</div></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Manual control</h2>
+    <div class="grid">
+      <button data-turn="-45">⟲ 45°</button>
+      <button data-move="0.5">▲ 0.5 m</button>
+      <button data-turn="45">45° ⟳</button>
+      <button data-turn="-15">⟲ 15°</button>
+      <button data-move="1.0">▲ 1.0 m</button>
+      <button data-turn="15">15° ⟳</button>
+      <button id="bPickup">grasp</button>
+      <button data-move="-0.5">▼ 0.5 m</button>
+      <button id="bDrop">release</button>
+    </div>
+    <div class="row" style="margin-top:11px">
+      <button id="bReset" class="warn">reset scene</button>
+      <label class="row" style="gap:6px;color:var(--muted);font-size:12px">
+        <input type="checkbox" id="cbObs"> obstacle barrier
+      </label>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Scripted fetch</h2>
+    <div class="row">
+      <select id="target"></select>
+      <button id="bRun" class="go">run fetch</button>
+      <button id="bStop" disabled>stop</button>
+    </div>
+    <p class="sub" style="margin:9px 0 10px">
+      Drives the real endpoints one step at a time so you can watch it. Uses engine
+      ground truth, so it is the <em>optimal</em> baseline — not the agent.
+    </p>
+    <div id="log"><div class="t-sys">ready</div></div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+let steps = 0, running = false, busy = false;
+
+function log(msg, cls='t-sys'){
+  const d = document.createElement('div');
+  d.className = cls; d.textContent = msg;
+  $('#log').appendChild(d); $('#log').scrollTop = $('#log').scrollHeight;
+}
+const jget  = p => fetch(p).then(r => r.json());
+const jpost = (p,b) => fetch(p,{method:'POST',headers:{'Content-Type':'application/json'},
+                               body:JSON.stringify(b||{})}).then(r => r.json());
+
+function refreshImages(){
+  const t = Date.now();
+  $('#pov').src = '/look?t=' + t;
+  $('#top').src = '/admin/overhead?t=' + t;
+}
+
+async function refreshState(){
+  try{
+    const [st, dp] = await Promise.all([jget('/state'), jget('/depth')]);
+    $('#sHead').textContent  = st.heading.toFixed(1) + '°';
+    $('#sX').textContent     = st.x.toFixed(2);
+    $('#sY').textContent     = st.y.toFixed(2);
+    $('#sRetry').textContent = st.retry_count;
+    $('#sDepth').textContent = dp.distance === null ? '—' : dp.distance.toFixed(2) + ' m';
+    $('#stateChip').textContent = st.state;
+    $('#holdChip').textContent  = st.holding ? 'holding' : 'empty';
+    $('#holdChip').style.color  = st.holding ? 'var(--good)' : 'var(--muted)';
+    $('#dot').style.background  = 'var(--good)';
+    return st;
+  }catch(e){ $('#dot').style.background = 'var(--bad)'; throw e; }
+}
+
+async function act(tool, args){
+  if(busy) return;
+  busy = true;
+  try{
+    let res;
+    if(tool === 'turn')        res = await jpost('/turn', args);
+    else if(tool === 'move')   res = await jpost('/move', args);
+    else if(tool === 'pickup') res = await jpost('/pickup');
+    else if(tool === 'drop')   res = await jpost('/drop');
+    steps++; $('#sSteps').textContent = steps;
+    const a = Object.keys(args||{}).length ? JSON.stringify(args) : '';
+    log(`${String(steps).padStart(2,'0')}  ${tool}${a} → ${JSON.stringify(res)}`, 't-' + tool);
+    refreshImages(); await refreshState();
+    return res;
+  }catch(e){ log('error: ' + e, 't-err'); }
+  finally{ busy = false; }
+}
+
+document.querySelectorAll('[data-turn]').forEach(b =>
+  b.onclick = () => act('turn', {degrees: +b.dataset.turn}));
+document.querySelectorAll('[data-move]').forEach(b =>
+  b.onclick = () => act('move', {distance: +b.dataset.move}));
+$('#bPickup').onclick = () => act('pickup', {});
+$('#bDrop').onclick   = () => act('drop', {});
+
+$('#bReset').onclick = async () => {
+  running = false;
+  await jpost('/admin/reset', {command: '', obstacles: $('#cbObs').checked, record: false});
+  steps = 0; $('#sSteps').textContent = 0;
+  $('#log').innerHTML = '';
+  log('scene reset' + ($('#cbObs').checked ? ' with obstacle barrier' : ''), 't-sys');
+  refreshImages(); refreshState();
+};
+
+$('#bRun').onclick = async () => {
+  if(running) return;
+  running = true; $('#bRun').disabled = true; $('#bStop').disabled = false;
+  const target = $('#target').value;
+  log('scripted fetch: ' + target, 't-sys');
+  for(let i = 0; i < 25 && running; i++){
+    const plan = await jget('/admin/next_action?target=' + encodeURIComponent(target));
+    if(plan.done){ log(plan.reason || 'done', 't-sys'); break; }
+    log('   plan: ' + plan.note, 't-sys');
+    const res = await act(plan.tool, plan.args);
+    if(plan.tool === 'drop'){
+      log(res && res.in_zone ? '✓ delivered to the drop zone' : '✗ missed the drop zone',
+          res && res.in_zone ? 't-move' : 't-err');
+      break;
+    }
+    await new Promise(r => setTimeout(r, 180));
+  }
+  running = false; $('#bRun').disabled = false; $('#bStop').disabled = true;
+};
+$('#bStop').onclick = () => { running = false; log('stopped', 't-sys'); };
+
+(async function init(){
+  const t = await jget('/admin/targets');
+  $('#target').innerHTML = t.targets.map(x => `<option>${x}</option>`).join('');
+  refreshImages(); refreshState();
+  setInterval(() => { if(!busy && !running) refreshState(); }, 1500);
+})();
+</script>
+</body>
+</html>
