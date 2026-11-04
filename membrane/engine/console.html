@@ -213,7 +213,17 @@ $('#bStop').onclick = () => { running = false; log('stopped', 't-sys'); };
   const t = await jget('/admin/targets');
   $('#target').innerHTML = t.targets.map(x => `<option>${x}</option>`).join('');
   refreshImages(); refreshState();
-  setInterval(() => { if(!busy && !running) refreshState(); }, 1500);
+  // While an agent holds the lock the console is a spectator, so the views must
+  // refresh on their own -- otherwise the run is invisible and there is nothing
+  // to watch, which is the whole point during a demo or a judged run.
+  let wasLocked = false;
+  setInterval(async () => {
+    if(busy || running) return;
+    const st = await refreshState().catch(() => null);
+    const locked = $('#lockChip').style.display !== 'none';
+    if(locked || wasLocked) refreshImages();   // one extra tick after release
+    wasLocked = locked;
+  }, 1200);
 })();
 </script>
 </body>

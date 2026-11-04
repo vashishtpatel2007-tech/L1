@@ -88,7 +88,6 @@ SENSORS
 - `collided` true means you touched something and were pushed back 0.1 m.
 
 HOW TO ACT WELL
-MOVEMENT DISCIPLINE -- read this before every decision
 - NEVER TURN TWICE IN A ROW once your target is visible. If your previous action
   was a turn and you can see the target at all, your next action is a move.
   Turning repeatedly to perfect the alignment is the single most wasteful thing
