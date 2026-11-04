@@ -384,10 +384,10 @@ _agent_proc: dict[str, Any] = {"proc": None, "run_id": None, "started": 0.0}
 
 class AgentRunBody(BaseModel):
     command: str
-    provider: str = "local"
+    provider: str = "mock"
     model: str = ""
     max_steps: int = 60
-    rpm: int = 12
+    rpm: int = 8
     obstacles: bool = False
 
 
@@ -409,6 +409,8 @@ def admin_agent_run(body: AgentRunBody) -> dict[str, Any]:
            "--max-steps", str(body.max_steps),
            "--rpm", str(body.rpm),
            "--run-id", run_id]
+    if body.provider == "mock":
+        cmd.append("--mock")
     if body.model.strip():
         cmd += ["--model", body.model.strip()]
     if body.obstacles:

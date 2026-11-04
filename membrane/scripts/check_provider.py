@@ -49,7 +49,10 @@ PROVIDER_HINTS = {
     "local": [("404", "the model is not downloaded. Run: ollama pull qwen2.5vl:7b"),
               ("connection", "the Ollama daemon is not running. Run: ollama serve")],
     "gemini": [("404", "that model was retired. The default chain already falls back; "
-                       "pass --model to pick another.")],
+                       "pass --model to pick another."),
+               ("429", "per-model quota. Wait a minute, or pass --model gemini-3.1-flash-lite."),
+               ("400", "the image was rejected or the model needs a different payload. "
+                       "Retry with the engine running so /look is a real 640x480 JPEG.")],
     "openrouter": [("404", "unknown model slug. Check the exact id on openrouter.ai/models.")],
     "anthropic": [("404", "unknown model id. Use claude-sonnet-5-5.")],
     "groq": [("404", "unknown model id. Check console.groq.com/docs/models.")],

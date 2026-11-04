@@ -362,7 +362,7 @@ $('#bAgent').onclick = async () => {
   $('#bAgent').disabled = true; $('#bAgentStop').disabled = false;
   try{
     const r = await jpost('/admin/agent_run',{command,provider:$('#prov').value,
-        model:$('#mdl').value.trim(), max_steps:+$('#msteps').value, rpm:12,
+        model:$('#mdl').value.trim(), max_steps:+$('#msteps').value, rpm:8,
         obstacles:$('#cbObs').checked});
     if(r.detail){ alog('could not start: '+r.detail,'t-err');
                   $('#bAgent').disabled=false; $('#bAgentStop').disabled=true; return; }
@@ -378,7 +378,9 @@ $('#bAgentStop').onclick = async () => { await jpost('/admin/agent_stop'); alog(
   const pv = await jget('/admin/providers');
   $('#prov').innerHTML = Object.entries(pv.available)
     .map(([k,v]) => '<option value="'+k+'"'+(v?'':' disabled')+'>'+k+(v?'':' (no key)')+'</option>').join('');
-  const ok = Object.entries(pv.available).find(([,v]) => v);
+  const prefer = ['gemini','anthropic','qwen','groq','local','openrouter'];
+  const ok = prefer.map(k => [k, pv.available[k]]).find(([,v]) => v)
+             || Object.entries(pv.available).find(([,v]) => v);
   if(ok) $('#prov').value = ok[0];
   refreshPov(); await refreshState(); await refreshLayout();
   setInterval(async () => {

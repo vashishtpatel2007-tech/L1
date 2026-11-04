@@ -301,7 +301,7 @@ def _release() -> None:
 
 
 # ------------------------------------------------------------ mock policy ---
-def _blobs(jpg: bytes) -> dict[str, Any]:
+def _blobs(jpg: bytes, command: str = "") -> dict[str, Any]:
     """Connected-component colour analysis over the same pixels Claude sees.
 
     Used only by --mock so the whole loop can be exercised for $0. A single
@@ -318,25 +318,64 @@ def _blobs(jpg: bytes) -> dict[str, Any]:
     sat = mx - mn
     # Scene objects render at saturation 186-216; sky gradient and JPEG ringing
     # sit far below. A low threshold made this chase the sky.
-    colourful = (sat > 130) & (mx > 90)
+    colourful = (sat > 110) & (mx > 80)
+    dark_platform = (mx < 35)
     greenish = colourful & (g > r + 40) & (g > b + 40)
+    zone_mask = dark_platform | greenish
+
+    # Command-guided colour selection for mock baseline
+    cmd = command.lower()
+    if "red" in cmd:
+        target_mask = colourful & (r > g + 40) & (r > b + 40)
+    elif "blue" in cmd:
+        target_mask = colourful & (b > r + 30) & (b > g + 20)
+    elif "yellow" in cmd or "tallest" in cmd:
+        target_mask = colourful & (r > 130) & (g > 130) & (b < 100)
+    elif "purple" in cmd:
+        target_mask = colourful & (r > 70) & (b > 90) & (g < 80)
+    elif "orange" in cmd:
+        target_mask = colourful & (r > 160) & (g > 70) & (g < 170) & (b < 60)
+    elif "teal" in cmd:
+        target_mask = colourful & (g > 100) & (b > 100) & (r < 70)
+    elif "shortest" in cmd:
+        target_mask = colourful & (b > r + 30) & (b > g + 20)
+    else:
+        target_mask = colourful & ~zone_mask
+
+    # Shape preferences
+    want_box = any(w in cmd for w in ("cube", "box", "square"))
+    want_round = any(w in cmd for w in ("sphere", "round", "ball"))
+    want_cone = any(w in cmd for w in ("cone", "triangle", "pointed"))
 
     out: dict[str, Any] = {}
-    for key, mask in (("target", colourful & ~greenish), ("zone", greenish)):
+    for key, mask in (("target", target_mask), ("zone", zone_mask)):
         m = (mask.astype("uint8")) * 255
         m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3, 3), "uint8"))
         n, _lab, stats, cents = cv2.connectedComponentsWithStats(m, connectivity=8)
-        best, best_area = None, 0
+        best, best_score = None, 0
         for i in range(1, n):                      # 0 is background
             area = int(stats[i, cv2.CC_STAT_AREA])
-            if area < 60 or area <= best_area:
+            w, h = int(stats[i, cv2.CC_STAT_WIDTH]), int(stats[i, cv2.CC_STAT_HEIGHT])
+            if area < 30:
                 continue
-            best_area = area
+            extent = area / max(1, w * h)
+            score = float(area)
+            if key == "target":
+                if want_box:
+                    score = area * (2.0 if extent > 0.86 else 0.1)
+                elif want_round:
+                    score = area * (2.0 if extent <= 0.85 else 0.1)
+                elif want_cone:
+                    score = area * (2.0 if extent < 0.65 else 0.1)
+            if score <= best_score:
+                continue
+            best_score = score
             best = {
                 "u": int(cents[i][0]),
                 "v": int(cents[i][1]),
                 "px": area,
                 "bottom": int(stats[i, cv2.CC_STAT_TOP] + stats[i, cv2.CC_STAT_HEIGHT] - 1),
+                "extent": extent,
             }
         out[key] = best
     return out
@@ -372,12 +411,12 @@ def _nothing_to_decide(jpg: bytes, holding: bool) -> bool:
     r, g, b = a[..., 0], a[..., 1], a[..., 2]
 
     if holding:
-        mask = (g > r + 35) & (g > b + 35)
+        mask = ((r < 35) & (g < 35) & (b < 35)) | ((g > r + 35) & (g > b + 35))
         # The carried item always sits in the lower middle; without masking it
         # the frame never reads as uninformative while carrying.
         mask = mask.copy()
         mask[300:, 180:460] = False
-        return int(mask.sum()) < 120
+        return int(mask.sum()) < 80
 
     sat = a.max(axis=2) - a.min(axis=2)
     return int(((sat > 110) & (a.max(axis=2) > 80)).sum()) < 150
@@ -430,8 +469,8 @@ def _range_from_row(v: int) -> float:
 
 
 def _mock_decide(jpg: bytes, st: dict[str, Any], depth: float | None,
-                 memory: dict[str, Any]) -> tuple[str, dict[str, Any], str]:
-    bl = _blobs(jpg)
+                 memory: dict[str, Any], command: str = "") -> tuple[str, dict[str, Any], str]:
+    bl = _blobs(jpg, command)
     holding = st["holding"]
     if holding:
         memory["grasp_fails"] = 0
@@ -463,20 +502,23 @@ def _mock_decide(jpg: bytes, st: dict[str, Any], depth: float | None,
     # 0.47 m and cannot be trusted; nudge forward instead of grasping thin air.
     clipped = want["bottom"] >= 478
     rng = _range_from_row(want["bottom"])
-    if memory.get("grasp_fails", 0) >= 4:
+    if memory.get("grasp_fails", 0) >= 6:
         return "finish", {"outcome": "could not close the final distance"}, "repeated grasp failures"
     if clipped:
         # Alternate nudge and grasp: the range estimate is unusable here, so let
         # the engine adjudicate rather than guessing.
-        memory["grasp_fails"] = memory.get("grasp_fails", 0) + 1
         if last == "move":
             return "pickup", {}, "base clipped; range unusable, letting the engine adjudicate"
-        return "move", {"distance": 0.22}, "base row clipped at frame edge; nudging closer"
-    if rng <= 0.52:
-        memory["grasp_fails"] = memory.get("grasp_fails", 0) + 1
+        if last == "pickup":
+            memory["grasp_fails"] = memory.get("grasp_fails", 0) + 1
+        return "move", {"distance": 0.08}, "base row clipped at frame edge; nudging closer"
+    if rng <= 0.48:
+        if last == "pickup":
+            memory["grasp_fails"] = memory.get("grasp_fails", 0) + 1
+            return "move", {"distance": 0.08}, "previous grasp failed; nudging closer"
         return "pickup", {}, f"base row {want['bottom']} ~= {rng:.2f} m; grasping"
     memory["grasp_fails"] = 0
-    step = max(0.3, min(1.2, rng - 0.42))
+    step = max(0.10, min(1.2, rng - 0.42))
     return "move", {"distance": round(step, 2)}, f"{label} at ~{rng:.2f} m; closing"
 
 
@@ -497,8 +539,10 @@ def model_calls_used(spend: dict[str, Any]) -> int:
 
 def run(command: str, model: str | None, mock: bool, max_steps: int,
         obstacles: bool, run_id: str | None = None,
-        provider: str = "anthropic", rpm: int | None = None,
+        provider: str = "mock", rpm: int | None = None,
         budget: float | None = None, auto_scan: bool = True) -> dict[str, Any]:
+    if provider == "mock":
+        mock = True
     load_env()
     assert_prompt_is_clean(SYSTEM, TOOLS)          # startup leakage gate
 
@@ -526,6 +570,8 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
     turn_streak = 0          # consecutive turns with no move in between
     consecutive_failures = 0
     steps_since_pickup_try = 0
+    close_in_pending = False
+    close_in_count = 0
     # Landmark memory. Once the model has reported the patch at a pixel column,
     # its world bearing follows from the robot's OWN heading and the lens
     # geometry, and stays usable from anywhere in the room. Without it the carry
@@ -614,6 +660,23 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
                 f"degrees, and do not approach something you have already ruled out."
             )
 
+        # A missed grasp is almost always "a little too far", not "wrong object".
+        # Closing 0.22 m locally saves a model call and is what the prompt already
+        # tells the model to do after nothing_in_reach -- Gemini often does not.
+        if (action is None and not mock and not st["holding"] and close_in_pending
+                and close_in_count < 4):
+            close_in_pending = False
+            close_in_count += 1
+            result = sanitize("move", _post("/move", {"distance": 0.22}))
+            log.log_step("move", {"distance": 0.22}, result, frame_rel,
+                         f"last grasp missed; closing 0.22 m without a model call "
+                         f"(close-in {close_in_count}/4)", pose=st)
+            history.append(f"{step}: move(0.22) -> closing after a missed grasp")
+            turn_streak = 0
+            if result.get("collided"):
+                close_in_count = 4
+            continue
+
         # Nothing in view -> rotate without spending a model call. Capped so a
         # genuinely empty room cannot spin forever, and reset the moment
         # something appears.
@@ -645,7 +708,7 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
         if action is not None:
             tool, args, thinking = action
         elif mock:
-            tool, args, thinking = _mock_decide(jpg, st, depth, memory)
+            tool, args, thinking = _mock_decide(jpg, st, depth, memory, command)
             memory["last_tool"] = tool
         else:
             # Only the newest frame is an image; everything older is one text line.
@@ -712,6 +775,12 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
 
         turn_streak = turn_streak + 1 if tool == "turn" else 0
         steps_since_pickup_try = 0 if tool == "pickup" else steps_since_pickup_try + 1
+        if tool == "pickup":
+            missed = not result.get("success") and result.get("reason") == "nothing_in_reach"
+            close_in_pending = missed
+            if result.get("success"):
+                close_in_count = 0
+                close_in_pending = False
 
         seen_u = args.pop("patch_at_column", None)
         seen_v = args.pop("patch_at_row", None)
@@ -797,8 +866,8 @@ def _commit_spend(delta: float) -> float:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--command", required=True)
-    ap.add_argument("--provider", default="anthropic", choices=["anthropic", "gemini", "groq", "qwen", "local", "openrouter"],
-                    help="anthropic ships; qwen/local/gemini/groq/openrouter are for validation")
+    ap.add_argument("--provider", default="mock", choices=["mock", "anthropic", "gemini", "groq", "qwen", "local", "openrouter"],
+                    help="mock is the local zero-cost geometry baseline; anthropic ships at the event")
     ap.add_argument("--model", default=None, help="provider default if omitted")
     ap.add_argument("--rpm", type=int, default=None,
                     help="requests per minute ceiling; 0 disables pacing")

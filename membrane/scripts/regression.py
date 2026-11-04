@@ -49,9 +49,11 @@ def run_oracle(target: str, command: str, obstacles: bool) -> dict:
 
 
 def run_agent(command: str, model: str, mock: bool, max_steps: int,
-              obstacles: bool, run_id: str) -> dict:
+              obstacles: bool, run_id: str, provider: str = "gemini") -> dict:
     cmd = [sys.executable, "-m", "agent.loop", "--command", command,
-           "--max-steps", str(max_steps), "--run-id", run_id, "--model", model]
+           "--max-steps", str(max_steps), "--run-id", run_id, "--provider", provider]
+    if model:
+        cmd += ["--model", model]
     if mock:
         cmd.append("--mock")
     if obstacles:
@@ -66,7 +68,8 @@ def run_agent(command: str, model: str, mock: bool, max_steps: int,
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["oracle", "claude", "mock"], default="oracle")
-    ap.add_argument("--model", default="claude-sonnet-5-5")
+    ap.add_argument("--provider", default="gemini")
+    ap.add_argument("--model", default=None)
     ap.add_argument("--max-steps", type=int, default=35)
     ap.add_argument("--limit", type=int, default=0, help="only the first N commands")
     ap.add_argument("--obstacles", action="store_true")
@@ -96,8 +99,11 @@ def main() -> int:
             steps = res.get("optimal_steps", 0)
             outcome = res.get("engine_outcome", {})
         else:
+            provider = a.provider if a.mode != "claude" else (a.provider or "anthropic")
+            if a.mode == "claude" and a.provider == "gemini" and not a.model:
+                provider = "anthropic"
             res = run_agent(command, a.model, a.mode == "mock", a.max_steps,
-                            a.obstacles, f"reg{i:02d}")
+                            a.obstacles, f"reg{i:02d}", provider)
             steps = res.get("steps", 0)
             outcome = res.get("engine_outcome", {})
         delivered = outcome.get("dropped_label")

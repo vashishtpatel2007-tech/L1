@@ -27,7 +27,7 @@ def execute(sim, action):
 
 
 def prepare(sim, nav):
-    for _ in range(10):
+    for _ in range(16):
         action = nav.prepare(sim.look(), sim.state_payload())
         if action is None:
             return

@@ -12,9 +12,61 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent import env, loop
+from agent.navigation import ReturnNavigator
+from agent.vlm import Decision, FallbackVLM
 
 
 class ProviderRuntimeTests(unittest.TestCase):
+    def test_fallback_keeps_rate_limited_models_for_the_next_step(self):
+        class Fake:
+            name = "gemini"
+            prices = {}
+            def __init__(self, model, fail):
+                self.model = model
+                self.fail = fail
+                self.calls = 0
+            def decide(self, *args, **kwargs):
+                self.calls += 1
+                if self.fail:
+                    raise RuntimeError("HTTP 429: quota")
+                return Decision(tool="turn", args={"degrees": 10}, model=self.model)
+
+        a, b = Fake("flash-a", True), Fake("flash-b", False)
+        client = FallbackVLM([a, b])
+        first = client.decide("s", [], b"", "t")
+        self.assertEqual(first.tool, "turn")
+        self.assertEqual(a.calls, 1)
+        self.assertNotIn("flash-a", client.dead)
+        a.fail = False
+        second = client.decide("s", [], b"", "t")
+        self.assertEqual(second.model, "flash-a")
+        self.assertEqual(a.calls, 2)
+
+    def test_fallback_preserves_last_error_when_every_model_is_gone(self):
+        class Fake:
+            name = "gemini"
+            prices = {}
+            def __init__(self, model):
+                self.model = model
+            def decide(self, *args, **kwargs):
+                raise RuntimeError("HTTP 404: no longer available")
+
+        client = FallbackVLM([Fake("gone-a"), Fake("gone-b")])
+        first = client.decide("s", [], b"", "t")
+        self.assertIn("404", first.error)
+        second = client.decide("s", [], b"", "t")
+        self.assertIn("no remaining models", second.error)
+
+    def test_carry_survey_acquires_marker_then_navigates(self):
+        nav = ReturnNavigator()
+        pose = {"holding": True, "x": 0.0, "y": 0.0, "heading": 0.0, "state": "Carry"}
+        with patch("agent.navigation.marker_from_image", side_effect=[None, (1.2, 0.0)]):
+            first = nav.decide(b"jpg", pose)
+            self.assertEqual(first[0], "turn")
+            second = nav.decide(b"jpg", pose)
+        self.assertEqual(nav.goal, (1.2, 0.0))
+        self.assertEqual(second[0], "move")
+
     def test_windows_env_bom_and_explicit_environment_precedence(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / ".env"

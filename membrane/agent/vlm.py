@@ -69,9 +69,12 @@ class Decision:
 
 
 def _post(url: str, headers: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-    req = urllib.request.Request(
-        url, data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json", **headers})
+    req_headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)",
+        **headers,
+    }
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=req_headers)
     last = None
     for attempt in range(4):
         try:
@@ -93,6 +96,24 @@ def _post(url: str, headers: dict[str, str], body: dict[str, Any]) -> dict[str, 
                 continue
             raise RuntimeError(last) from e
     raise RuntimeError(last or "request failed")
+
+
+# ------------------------------------------------------------------- Mock --
+class MockVLM:
+    """Pure local physics, geometry, and computer vision mock. Zero external API calls."""
+
+    name = "mock"
+    env_key = ""
+    prices = {}
+
+    def __init__(self, model: str = "geometry", max_tokens: int = 700,
+                 rpm: int | None = None) -> None:
+        self.model, self.max_tokens = model, max_tokens
+        self.rpm = 0
+        self.key = "local_math"
+
+    def decide(self, system: str, tools: list[dict], image_jpeg: bytes, text: str) -> Decision:
+        return Decision(tool=None, provider=self.name, model=self.model)
 
 
 # ----------------------------------------------------------------- Claude --
@@ -215,17 +236,20 @@ class GeminiVLM:
 
 # ------------------------------------------------------------------- Groq --
 class GroqVLM:
-    """OpenAI-compatible vision + tools. A second free fallback."""
+    """OpenAI-compatible vision + tools. Fast cloud fallback."""
 
     name = "groq"
     env_key = "GROQ_API_KEY"
-    prices = {"meta-llama/llama-4-scout-17b-16e-instruct": (0.11, 0.34)}
+    prices = {
+        "qwen/qwen3.8-27b": (0.80, 4.00),
+        "meta-llama/llama-4-scout-17b-16e-instruct": (0.11, 0.34),
+    }
 
-    def __init__(self, model: str = "meta-llama/llama-4-scout-17b-16e-instruct",
+    def __init__(self, model: str = "qwen/qwen3.8-27b",
                  max_tokens: int = 700, rpm: int | None = None) -> None:
         self.model, self.max_tokens = model, max_tokens
         self.rpm = DEFAULT_RPM[self.name] if rpm is None else rpm
-        self.key = os.environ.get(self.env_key, "")
+        self.key = os.environ.get(self.env_key, "") or os.environ.get("GROQ_API", "")
 
     def decide(self, system: str, tools: list[dict], image_jpeg: bytes, text: str) -> Decision:
         oa_tools = [{"type": "function", "function": {
@@ -444,8 +468,10 @@ class FallbackVLM:
 
     Newer Gemini models return 503 under load and free tiers hand out 429s per
     model, so a single-model client stalls a run on a condition that has nothing
-    to do with the agent. A model that fails is demoted for the rest of the run
-    rather than retried every step.
+    to do with the agent. A 404 means the model is gone, so it is demoted for
+    the rest of the run. A 429/503 is per-minute quota: try the next model this
+    step, but keep the first one eligible next step or the chain dies after one
+    burst and later steps report "all models unavailable: None".
     """
 
     def __init__(self, backends: list) -> None:
@@ -471,25 +497,36 @@ class FallbackVLM:
             if b.model in self.dead:
                 continue
             try:
-                return b.decide(system, tools, image_jpeg, text)
+                d = b.decide(system, tools, image_jpeg, text)
             except RuntimeError as e:
                 last = str(e)
-                if any(c in last for c in ("503", "429", "404")):
-                    self.dead.add(b.model)      # demote for the rest of the run
+                low = last.lower()
+                if "404" in last or "no longer available" in low:
+                    self.dead.add(b.model)
+                    continue
+                if any(c in last for c in ("503", "429")):
                     continue
                 raise
-        return Decision(tool=None, error=f"all models unavailable: {str(last)[:200]}")
+            if d.error:
+                last = d.error
+                low = last.lower()
+                if "404" in last or "no longer available" in low:
+                    self.dead.add(b.model)
+                    continue
+            return d
+        return Decision(tool=None, error=f"all models unavailable: {(last or 'no remaining models')[:200]}")
 
 
-PROVIDERS = {"anthropic": AnthropicVLM, "gemini": GeminiVLM, "groq": GroqVLM,
+PROVIDERS = {"mock": MockVLM, "anthropic": AnthropicVLM, "gemini": GeminiVLM, "groq": GroqVLM,
              "qwen": QwenVLM, "local": LocalVLM, "openrouter": OpenRouterVLM}
 #: Gemini's default is a FALLBACK CHAIN, not one model. Free tiers hand out
 #: per-model 429s and the newer previews return 503 under load, so a single
 #: default leaves the console dead on arrival for no reason to do with the agent.
 DEFAULT_MODEL = {
+    "mock": "geometry",
     "anthropic": "claude-sonnet-5-5",
-    "gemini": "gemini-flash-lite-latest,gemini-3.6-flash,gemini-2.5-flash-lite",
-    "groq": "meta-llama/llama-4-scout-17b-16e-instruct",
+    "gemini": "gemini-3-flash-preview,gemini-3.1-flash-lite,gemini-3.7-flash,gemini-2.5-flash",
+    "groq": "qwen/qwen3.8-27b",
     "qwen": "qwen-vl-max,qwen-vl-plus",
     "local": "qwen2.5vl:7b",
     "openrouter": "meta-llama/llama-3.2-11b-vision-instruct:free",
@@ -542,12 +579,16 @@ def available() -> dict[str, bool]:
 
     out = {}
     for name, cls in PROVIDERS.items():
-        if name == "local":
+        if name == "mock":
+            out[name] = True
+        elif name == "local":
             out[name] = _ollama_up()
         elif name == "gemini":
             out[name] = bool(os.environ.get(cls.env_key) or os.environ.get("GOOGLE_API_KEY"))
         elif name == "qwen":
             out[name] = bool(os.environ.get(cls.env_key) or os.environ.get("QWEN_API_KEY"))
+        elif name == "groq":
+            out[name] = bool(os.environ.get(cls.env_key) or os.environ.get("GROQ_API"))
         else:
             out[name] = bool(os.environ.get(cls.env_key))
     return out

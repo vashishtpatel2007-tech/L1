@@ -15,10 +15,11 @@ import numpy as np
 from PIL import Image
 
 
-#: A 45 degree sweep covers the room in eight looks, but each one costs a step
-#: and the marker is visible from only a minority of headings. Four is enough to
-#: catch the easy cases without spending a quarter of the budget on a maybe.
-MAX_SURVEY_TURNS = 4
+#: A 45 degree sweep covers the room in eight looks. The marker is visible from
+#: only a minority of headings, so a half-turn survey leaves it unseen and the
+#: carry leg falls back to the model, which then drops off the platform.
+MAX_SURVEY_TURNS = 8
+MAX_CARRY_SURVEY = 8
 
 
 def relative_angle(target: float, heading: float) -> float:
@@ -37,14 +38,38 @@ def ground_point(u: float, v: float, height: float = 0.0) -> tuple[float, float]
 
 
 def marker_from_image(jpg: bytes, pose: dict) -> tuple[float, float] | None:
-    """Locate the existing two-tone delivery marker, entirely from RGB pixels.
+    """Locate the delivery marker, entirely from RGB pixels.
 
-    Estimate the slab's height from its visible floor-contact edge, rather than
-    treating its raised top as floor (which overestimates distance). Reject
-    clipped/occluded markers instead of learning a false delivery position.
+    Works for both the raised dark platform with white rim (current scene)
+    and the legacy two-tone green decal.
     """
     rgb = np.asarray(Image.open(io.BytesIO(jpg)).convert("RGB")).astype(np.int16)
     r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+
+    # 1. Dark platform (black slab 70 mm tall with white rim)
+    dark = (r < 35) & (g < 35) & (b < 35)
+    white = (r > 180) & (g > 180) & (b > 180)
+    count, _, stats, cents = cv2.connectedComponentsWithStats(dark.astype(np.uint8))
+    for i in range(1, count):
+        x, y, w, h, area = stats[i]
+        if area < 30 or w < 10 or x <= 2 or x + w >= 637 or y + h >= 477:
+            continue
+        # Verify white rim near the dark slab
+        above_y = max(0, y - 10)
+        if not np.any(white[above_y:y + 1, max(0, x - 2):min(640, x + w + 2)]):
+            continue
+        vb = y + h - 1
+        u_center = int(cents[i][0])
+        base = ground_point(u_center, vb, height=0.0)
+        if base is None:
+            continue
+        # Platform center is 0.55 m behind its near edge
+        forward, right = base[0] + 0.55, base[1]
+        heading = math.radians(pose["heading"])
+        return (pose["x"] + forward * math.cos(heading) - right * math.sin(heading),
+                pose["y"] - forward * math.sin(heading) - right * math.cos(heading))
+
+    # 2. Legacy green platform fallback
     face = (g > r + 35) & (g > b + 35)
     top = (g > r * 1.02) & (r > 90) & (r > b * 1.7) & (g > b * 1.8)
     count, labels, stats, _ = cv2.connectedComponentsWithStats(top.astype(np.uint8))
@@ -100,6 +125,7 @@ class ReturnNavigator:
     initial_heading: float | None = None
     prepared: bool = False
     survey_turns: int = 0
+    carry_survey: int = 0
     centred: bool = False
     phase: str = "Finding delivery platform"
     last_position: tuple[float, float] | None = None
@@ -161,10 +187,21 @@ class ReturnNavigator:
         if not pose["holding"]:
             return None
         if self.goal is None:
-            # Never measured it. Hand back to the model, which can find the
-            # marker visually -- far better than abandoning a successful grasp.
-            self.phase = "Carrying, looking for the delivery marker"
-            return None
+            seen = marker_from_image(jpg, pose)
+            if seen is not None:
+                self.goal = seen
+                self.phase = "Approaching delivery platform"
+            elif self.carry_survey < MAX_CARRY_SURVEY:
+                self.carry_survey += 1
+                self.phase = "Carrying, looking for the delivery marker"
+                return ("turn", {"degrees": 45},
+                        "searching for the delivery marker after pickup")
+            else:
+                # Full circle from the grasp pose still missed it. The model
+                # can find the marker visually -- far better than abandoning
+                # a successful grasp.
+                self.phase = "Carrying, looking for the delivery marker"
+                return None
         if pose["state"] == "Blocked":
             # Obstructed: let the model back out and re-route rather than
             # stranding the robot holding the item.

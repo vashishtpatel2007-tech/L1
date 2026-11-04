@@ -4,7 +4,7 @@
   "pass_rate": 1.0,
   "passed": 16,
   "total": 16,
-  "avg_steps": 14.12,
+  "avg_steps": 9.75,
   "total_cost_usd": 0,
   "rows": [
     {
@@ -20,9 +20,9 @@
       "command": "Bring the tallest object",
       "expected": "yellow cone",
       "delivered": "yellow cone",
-      "steps": 21,
+      "steps": 7,
       "verdict": "pass",
-      "seconds": 0.7,
+      "seconds": 0.5,
       "cost_usd": 0.0
     },
     {
@@ -56,9 +56,9 @@
       "command": "Bring the yellow cone",
       "expected": "yellow cone",
       "delivered": "yellow cone",
-      "steps": 21,
+      "steps": 7,
       "verdict": "pass",
-      "seconds": 0.7,
+      "seconds": 0.5,
       "cost_usd": 0.0
     },
     {
@@ -83,27 +83,27 @@
       "command": "Bring the cone",
       "expected": "yellow cone",
       "delivered": "yellow cone",
-      "steps": 21,
+      "steps": 7,
       "verdict": "pass",
-      "seconds": 0.7,
+      "seconds": 0.6,
       "cost_usd": 0.0
     },
     {
       "command": "Bring the yellow one",
       "expected": "yellow cone",
       "delivered": "yellow cone",
-      "steps": 21,
+      "steps": 7,
       "verdict": "pass",
-      "seconds": 0.7,
+      "seconds": 0.5,
       "cost_usd": 0.0
     },
     {
       "command": "Bring the pointy one",
       "expected": "yellow cone",
       "delivered": "yellow cone",
-      "steps": 21,
+      "steps": 7,
       "verdict": "pass",
-      "seconds": 0.7,
+      "seconds": 0.5,
       "cost_usd": 0.0
     },
     {

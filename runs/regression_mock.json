@@ -1,0 +1,38 @@
+{
+  "mode": "mock",
+  "model": null,
+  "pass_rate": 0.6666666666666666,
+  "passed": 2,
+  "total": 3,
+  "avg_steps": 24.33,
+  "total_cost_usd": 0,
+  "rows": [
+    {
+      "command": "Bring the round red thing",
+      "expected": "red sphere",
+      "delivered": "red sphere",
+      "steps": 21,
+      "verdict": "pass",
+      "seconds": 2.0,
+      "cost_usd": 0.0
+    },
+    {
+      "command": "Bring the tallest object",
+      "expected": "yellow cone",
+      "delivered": "yellow cone",
+      "steps": 31,
+      "verdict": "pass",
+      "seconds": 2.9,
+      "cost_usd": 0.0
+    },
+    {
+      "command": "Bring the red cube",
+      "expected": "red cube",
+      "delivered": "red sphere",
+      "steps": 21,
+      "verdict": "fail_wrong_object",
+      "seconds": 2.0,
+      "cost_usd": 0.0
+    }
+  ]
+}
