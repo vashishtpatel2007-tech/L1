@@ -381,6 +381,11 @@ def console() -> Response:
 # by reading the run's JSONL. The agent claims the run lock on its own.
 _agent_proc: dict[str, Any] = {"proc": None, "run_id": None, "started": 0.0}
 
+#: Past this a run is assumed wedged, not slow. Generous enough for a paced
+#: 60-step run against a throttling free tier, short enough that an operator is
+#: never stuck waiting on a corpse.
+STALE_RUN_SECONDS = 20 * 60
+
 
 class AgentRunBody(BaseModel):
     command: str
@@ -393,11 +398,29 @@ class AgentRunBody(BaseModel):
 
 @app.post("/admin/agent_run")
 def admin_agent_run(body: AgentRunBody) -> dict[str, Any]:
+    # A run wedged in provider back-off holds the console hostage: one sat for
+    # over an hour, and every attempt to start another was refused. Reclaim a
+    # run that has clearly stopped making progress rather than requiring the
+    # operator to find and kill a process mid-demo.
     proc = _agent_proc["proc"]
     if proc is not None and proc.poll() is None:
-        raise HTTPException(409, f"an agent run is already in progress ({_agent_proc['run_id']})")
+        age = time.time() - _agent_proc["started"]
+        if age < STALE_RUN_SECONDS:
+            raise HTTPException(
+                409, f"an agent run is already in progress ({_agent_proc['run_id']}, "
+                     f"{age:.0f}s old). Press stop, or wait "
+                     f"{STALE_RUN_SECONDS - age:.0f}s for it to be reclaimed.")
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+        lock.release(lock.token)
+        _agent_proc["proc"] = None
+
     if lock.active():
-        raise HTTPException(409, f"engine is locked by {lock.owner!r}")
+        # The lock outliving its run means the holder died without releasing.
+        lock.release(lock.token)
     if not body.command.strip():
         raise HTTPException(400, "command is empty")
 
