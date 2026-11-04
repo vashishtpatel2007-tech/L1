@@ -16,6 +16,7 @@ import argparse
 import io
 import math
 import json
+import os
 import time
 import urllib.error
 import urllib.request
@@ -39,7 +40,10 @@ from .vlm import cost_usd
 from .runlog import RunLog
 from .navigation import ReturnNavigator
 
-ENGINE = "http://127.0.0.1:8080"
+#: Overridable so the agent can be pointed at an engine on another port.
+#: It must match the port uvicorn was started on -- a mismatch surfaced as a
+#: bare "Errno 61 Connection refused" traceback with nothing to act on.
+ENGINE = os.environ.get("MEMBRANE_ENGINE", "http://127.0.0.1:8080")
 RUNS = Path(__file__).resolve().parents[2] / "runs"
 
 # --------------------------------------------------------------- prompt ----
@@ -276,6 +280,32 @@ def _post(path: str, body: dict[str, Any] | None = None) -> Any:
         headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=60) as r:
         return json.loads(r.read().decode())
+
+
+def wait_for_engine(timeout_s: float = 20.0) -> None:
+    """Block until the engine answers, then return.
+
+    The console can launch an agent in the same breath as starting or
+    restarting the engine, and a server that is still binding its port answers
+    with a refused connection. That surfaced as a forty-line urllib traceback
+    ending in "Errno 61", which says nothing about what to do. Wait for it,
+    and if it never comes up say so in one line.
+    """
+    deadline = time.time() + timeout_s
+    last = None
+    while time.time() < deadline:
+        try:
+            urllib.request.urlopen(f"{ENGINE}/state", timeout=5).read()
+            return
+        except urllib.error.HTTPError:
+            return                       # answering, even if unhappy: it is up
+        except (urllib.error.URLError, OSError) as e:
+            last = e
+            time.sleep(0.5)
+    raise RuntimeError(
+        f"the engine is not answering at {ENGINE} ({last}). Start it with "
+        f"`uvicorn engine.server:app --port 8080` and run this again."
+    )
 
 
 def _claim(owner: str, ttl_s: float) -> None:
@@ -552,6 +582,7 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
 
     # Exclusive control for the whole run. Without this an open console shares
     # the robot and the trace becomes fiction.
+    wait_for_engine()
     _claim(f"agent:{run_id}", ttl_s=max(300.0, max_steps * 30.0))
     reset: dict[str, Any] = {"command": command, "record": True}
     if obstacles:                         # leave a randomised scene untouched
