@@ -47,6 +47,9 @@ ALLOWED_POSE_KEYS = {"state", "x", "y", "heading", "holding", "retry_count"}
 
 
 def audit_run(run_dir: Path) -> tuple[bool, list[str]]:
+    """Returns (clean, problems). An aborted run -- one that captured no frames
+    at all -- is reported separately: it carries nothing to leak and nothing to
+    submit, and letting it fail the gate buries real findings in noise."""
     problems: list[str] = []
     log = run_dir / "log.jsonl"
     if not log.exists():
@@ -108,8 +111,14 @@ def main() -> int:
         print(f"no runs found under {target}")
         return 2
 
-    bad = 0
+    bad = aborted = 0
     for r in runs:
+        frames_dir = r / "frames"
+        n_frames = len(list(frames_dir.glob("*.png"))) if frames_dir.exists() else 0
+        if n_frames == 0:
+            aborted += 1
+            print(f"  SKIP   {r.name}  (aborted: no frames captured, nothing to submit)")
+            continue
         ok, problems = audit_run(r)
         steps = sum(1 for line in (r / "log.jsonl").read_text().splitlines()
                     if line.strip() and "step" in json.loads(line))
@@ -122,10 +131,13 @@ def main() -> int:
             for p in problems[:12]:
                 print(f"           - {p}")
     print()
+    checked = len(runs) - aborted
+    if aborted:
+        print(f"{aborted} aborted run(s) skipped -- no frames, nothing to submit.")
     if bad:
-        print(f"{bad} of {len(runs)} runs FAILED the leakage audit. Do not submit those runs.")
+        print(f"{bad} of {checked} real runs FAILED the leakage audit. Do not submit those.")
         return 1
-    print(f"All {len(runs)} runs clean: no object data reached the model.")
+    print(f"All {checked} real runs clean: no object data reached the model.")
     return 0
 
 

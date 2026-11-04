@@ -44,7 +44,9 @@ class RunLog:
         import io
 
         Image.open(io.BytesIO(jpg_bytes)).save(out, format="PNG")
-        return str(out.relative_to(self.dir))
+        # as_posix(), never str(): a backslash separator makes the path
+        # unresolvable for anyone reading the log and trips the audit.
+        return out.relative_to(self.dir).as_posix()
 
     def log_step(self, tool: str, args: dict[str, Any], result: Any,
                  frame_path: str | None, thinking: str = "",
