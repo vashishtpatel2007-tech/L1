@@ -79,3 +79,63 @@ def test_obstacle_blocks_the_straight_path(obstacle_sim: Sim):
     obstacle_sim.turn(-90.0)                 # face +y, toward the barrier
     hit = any(obstacle_sim.move(1.0)["collided"] for _ in range(4))
     assert hit, "the obstacle did not block the path"
+
+
+class TestBlockedRecovery:
+    """The brief: 'Blocked: Collision or no movement for 2 seconds; back off/
+    turn/retry. Fail after 3 retries.' Three attempts to escape ONE blockage --
+    not three bumps across a whole run."""
+
+    def test_retries_reset_after_the_robot_escapes_and_makes_progress(self, sim: Sim):
+        """Regression: carrying the cone around the room used to die on a clean
+        circuit, because every brush against a wall counted forever."""
+        for _ in range(8):                      # bump the wall once
+            if sim.move(1.5)["collided"]:
+                break
+        assert sim.retries == 1
+        sim.turn(180)                           # turn away and drive off
+        sim.move(1.5)
+        assert sim.retries == 0, "a successful escape must clear the retry count"
+        assert sim.state != "Done"
+
+    def test_three_failures_without_escaping_still_end_the_run(self, sim: Sim):
+        """The limit must still bite when the robot is genuinely stuck."""
+        for _ in range(12):
+            sim.move(1.5)
+            if sim.state == "Done":
+                break
+        assert sim.retries == MAX_RETRIES
+        assert sim.outcome.result == "fail_collision"
+
+    def test_a_commanded_move_that_goes_nowhere_counts_as_blocked(self, sim: Sim):
+        """The brief's second Blocked trigger, 'no movement for 2 seconds',
+        which was never implemented."""
+        for _ in range(8):
+            if sim.move(1.5)["collided"]:
+                break
+        before = sim.retries
+        sim.move(0.5)                            # nose against the wall: no travel
+        assert sim.retries > before
+
+
+class TestCarriedObjectIsPartOfTheFootprint:
+    def test_a_carried_object_cannot_pass_through_a_wall(self, sim: Sim):
+        """Regression: a cone held 0.6 m ahead reached y=3.95 with the wall face
+        at 3.90. An object sliding through a wall is the most obviously wrong
+        thing a judge can see in a clip."""
+        import math
+
+        o = next(x for x in sim.scene.objects if x.label == "yellow cone")
+        b = math.degrees(math.atan2(-(o.pos[1] - sim.y), o.pos[0] - sim.x))
+        sim.turn(((b - sim.heading + 180) % 360) - 180)
+        sim.move(math.hypot(o.pos[0] - sim.x, o.pos[1] - sim.y) - 0.42)
+        assert sim.pickup()["success"] is True
+
+        for _ in range(14):                      # lap the room while carrying
+            sim.turn(30)
+            sim.move(1.0)
+            pos = sim.data.xpos[sim.obj_bids[sim.holding]][:2] if sim.holding else None
+            if pos is not None:
+                assert abs(pos[0]) < 3.95 and abs(pos[1]) < 3.95, (
+                    f"carried object left the room at {pos}"
+                )
