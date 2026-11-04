@@ -82,10 +82,14 @@ than repeating the same call.
 
 SENSORS
 - `depth_ahead` is a single ray straight out from the frame centre, in metres, or
-  null when nothing is within 10 m. It does NOT tell you what it hit. Because the
-  ray leaves the lens 10 degrees below horizontal, it passes OVER short items at
-  close range and reports the far wall instead. Trust the base-row estimate above
-  over `depth_ahead` whenever the two disagree.
+  null when nothing is within 10 m. It does NOT tell you what it hit.
+- USE IT AS A SANITY CHECK ON YOUR OWN RANGE ESTIMATE. If `depth_ahead` is well
+  over 1 m, nothing is within grasping distance however close the target looks,
+  and a pickup will fail. Drive first. Judging a far object to be "within
+  grasping range" is the most common way runs are wasted.
+- Once inside about a metre the ray becomes unreliable: it leaves the lens 10
+  degrees below horizontal and passes OVER short items, reporting the wall
+  behind. At that range trust the base-row estimate instead.
 - `collided` true means you touched something and were pushed back 0.1 m.
 
 BEFORE EVERY OTHER CONSIDERATION, ASK: CAN I GRASP NOW?
@@ -378,6 +382,44 @@ def _nothing_to_decide(jpg: bytes, holding: bool) -> bool:
     return int(((sat > 110) & (a.max(axis=2) > 80)).sum()) < 150
 
 
+#: Beyond this the robot physically cannot grasp (reach is 0.5 m), so a pickup
+#: is certain to fail and costs a step and a model call to learn nothing.
+GRASP_LIMIT = 0.95
+#: Below this something is close enough that grasping is worth a try.
+GRASP_HINT = 0.70
+
+
+def reflex(tool: str, args: dict[str, Any], depth: float | None,
+           holding: bool) -> tuple[str, dict[str, Any], str] | None:
+    """Correct an action the robot's own sensors say cannot work.
+
+    Small vision models misjudge pixel geometry badly. One run reported "its
+    base is at row 400, indicating it is within grasping range" -- row 400 means
+    0.67 m -- while the object was 2.4 m away, and burned four steps on pickups
+    that could not possibly succeed.
+
+    The depth ray is not a perception shortcut: it does not say WHAT is ahead,
+    only how far the nearest thing is, and the brief lists it as a permitted
+    sensor. Using it to veto an impossible action is the robot knowing its own
+    reach, not the agent identifying anything.
+
+    Returns a replacement action, or None to pass the model's choice through.
+    """
+    if tool == "pickup" and not holding and depth is not None and depth > GRASP_LIMIT:
+        close = max(0.3, min(2.5, depth - 0.45))
+        return ("move", {"distance": round(close, 2)},
+                f"reflex: grasp refused, the nearest thing ahead is {depth:.2f} m away "
+                f"and reach is 0.5 m; closing {close:.2f} m first")
+
+    if (tool == "move" and not holding and depth is not None and depth < GRASP_HINT
+            and float(args.get("distance", 0) or 0) > 0.25):
+        return ("move", {"distance": 0.2},
+                f"reflex: only {depth:.2f} m of clearance ahead, shortening the move "
+                f"to 0.2 m to avoid shoving the target away")
+
+    return None
+
+
 def _range_from_row(v: int) -> float:
     """Ground distance to a floor-resting item whose base is at image row v.
     Pure camera geometry: 0.5 m camera height, 10 deg down-tilt, 73.74 deg vFOV."""
@@ -616,6 +658,13 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
             tool, args = d.tool, d.args or {}
             # The reason lives in the call itself; free-form text is a bonus.
             thinking = (args.pop("reason", "") or d.text or "").strip()
+
+        # ---- reflex check before execution ----
+        if not mock:
+            corrected = reflex(tool, args, depth, st["holding"])
+            if corrected is not None:
+                tool, args, note = corrected
+                thinking = f"{thinking}  [{note}]" if thinking else note
 
         # ---- execute ----
         if tool == "finish":
