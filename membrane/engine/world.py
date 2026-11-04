@@ -73,7 +73,9 @@ def default_scene(with_obstacles: bool = False) -> Scene:
 
     Colour sharing : red {sphere, box}, blue {box, cylinder}
     Shape sharing  : box {red, blue}
-    Height ordering: cone (0.80) > cylinder (0.60) > boxes/sphere (~0.36)
+    Height ordering: every height is DISTINCT (0.26 < 0.30 < 0.34 < 0.40 < 0.50)
+    so "tallest" and "shortest" each resolve to exactly one object. With ties,
+    a judge's superlative command becomes a coin flip.
     The drop zone is green and no object is green, so "the green square" is
     unambiguous for the multi-view stretch goal.
     """
@@ -81,13 +83,13 @@ def default_scene(with_obstacles: bool = False) -> Scene:
         SceneObject("obj0", "sphere",   "red",    (0.85, 0.12, 0.12, 1), (2.6, 1.7),
                     (0.15,), 0.30, "red sphere"),
         SceneObject("obj1", "box",      "red",    (0.85, 0.12, 0.12, 1), (-2.2, 2.3),
-                    (0.15, 0.15, 0.15), 0.30, "red cube"),
+                    (0.17, 0.17, 0.17), 0.34, "red cube"),
         SceneObject("obj2", "box",      "blue",   (0.15, 0.35, 0.90, 1), (2.9, -1.9),
-                    (0.15, 0.15, 0.15), 0.30, "blue cube"),
+                    (0.13, 0.13, 0.13), 0.26, "blue cube"),
         SceneObject("obj3", "cylinder", "blue",   (0.15, 0.35, 0.90, 1), (-2.8, -1.4),
-                    (0.14, 0.17), 0.34, "blue cylinder"),
+                    (0.14, 0.20), 0.40, "blue cylinder"),
         SceneObject("obj4", "cone",     "yellow", (0.95, 0.80, 0.10, 1), (0.4, 3.0),
-                    (0.20, 0.46), 0.46, "yellow cone"),
+                    (0.20, 0.50), 0.50, "yellow cone"),
     ]
     obstacles = [(0.0, 1.1, 1.3, 0.12)] if with_obstacles else []
     return Scene(objects=objects, drop_zone=(0.0, -2.8), robot_start=(0.0, 0.0, 0.0), obstacles=obstacles)
@@ -158,7 +160,7 @@ def build_xml(scene: Scene) -> str:
     <quality shadowsize="2048"/>
     <!-- Claude identifies objects from these pixels, so the room must be evenly
          and generously lit. Unlit corners directly cost identification accuracy. -->
-    <headlight ambient="0.32 0.32 0.32" diffuse="0.35 0.35 0.35" specular="0.05 0.05 0.05"/>
+    <headlight ambient="0.34 0.34 0.34" diffuse="0.26 0.26 0.26" specular="0 0 0"/>
     <map znear="0.004" zfar="40"/>
   </visual>
   <asset>
@@ -167,12 +169,24 @@ def build_xml(scene: Scene) -> str:
              rgb2="0.94 0.96 1.0" width="256" height="256"/>
     <texture name="floortex" type="2d" builtin="checker" rgb1="0.90 0.90 0.92"
              rgb2="0.80 0.80 0.84" width="512" height="512"/>
-    <material name="floormat" texture="floortex" texrepeat="12 12" specular="0.1" shininess="0.1"/>
+    <!-- specular 0: the highlight blows out the centre of the overhead view
+         (which judges read as directness evidence) and adds glare to the POV. -->
+    <material name="floormat" texture="floortex" texrepeat="12 12" specular="0" shininess="0"/>
   </asset>
   <worldbody>
-    <light pos="0 0 4" dir="0 0 -1" diffuse="0.45 0.45 0.45" specular="0.05 0.05 0.05" castshadow="true"/>
-    <light pos="3 3 3" dir="-1 -1 -1" diffuse="0.22 0.22 0.22" castshadow="false"/>
-    <light pos="-3 -3 3" dir="1 1 -1" diffuse="0.20 0.20 0.20" castshadow="false"/>
+    <!-- Directional, not positional. A point light overhead falls off with
+         distance and burns a bright pool into the middle of the floor, which
+         washes out the centre of the overhead view the judges read as
+         directness evidence. Directional light has no attenuation, so the room
+         is lit evenly and object colours stay consistent wherever they sit.
+         Levels chosen by measuring OBJECT VIVIDNESS, not mean frame brightness:
+         Claude identifies items by colour, so a frame that is correctly exposed
+         on average but renders a saturated object as muted is a worse frame.
+         At these values a red object peaks at 245 with no channel clipping. -->
+    <light directional="true" dir="0 0 -1" diffuse="0.42 0.42 0.42"
+           specular="0 0 0" castshadow="true"/>
+    <light directional="true" dir="-0.6 -0.6 -0.5" diffuse="0.18 0.18 0.18" castshadow="false"/>
+    <light directional="true" dir="0.6 0.6 -0.5" diffuse="0.15 0.15 0.15" castshadow="false"/>
 
     <geom name="floor" type="plane" size="{ROOM_HALF} {ROOM_HALF} 0.1" material="floormat"/>
     <geom name="dropzone" type="box" pos="{dz_x} {dz_y} 0.006"

@@ -1,0 +1,155 @@
+{
+  "mode": "oracle",
+  "model": null,
+  "pass_rate": 1.0,
+  "passed": 16,
+  "total": 16,
+  "avg_steps": 6.0,
+  "total_cost_usd": 0,
+  "rows": [
+    {
+      "command": "Bring the round red thing",
+      "expected": "red sphere",
+      "delivered": "red sphere",
+      "steps": 6,
+      "verdict": "pass",
+      "seconds": 0.4,
+      "cost_usd": 0.0
+    },
+    {
+      "command": "Bring the tallest object",
+      "expected": "yellow cone",
+      "delivered": "yellow cone",
+      "steps": 6,
+      "verdict": "pass",
+      "seconds": 0.5,
+      "cost_usd": 0.0
+    },
+    {
+      "command": "Bring the red cube",
+      "expected": "red cube",
+      "delivered": "red cube",
+      "steps": 6,
+      "verdict": "pass",
+      "seconds": 0.5,
+      "cost_usd": 0.0
+    },
+    {
+      "command": "Bring the blue cube",
+      "expected": "blue cube",
+      "delivered": "blue cube",
+      "steps": 6,
+      "verdict": "pass",
+      "seconds": 0.4,
+      "cost_usd": 0.0
+    },
+    {
+      "command": "Bring the blue cylinder",
+      "expected": "blue cylinder",
+      "delivered": "blue cylinder",
+      "steps": 6,
+      "verdict": "pass",
+      "seconds": 0.4,
+      "cost_usd": 0.0
+    },
+    {
+      "command": "Bring the yellow cone",
+      "expected": "yellow cone",
+      "delivered": "yellow cone",
+      "steps": 6,
+      "verdict": "pass",
+      "seconds": 0.5,
+      "cost_usd": 0.0
+    },
+    {
+      "command": "Bring the red sphere",
+      "expected": "red sphere",
+      "delivered": "red sphere",
+      "steps": 6,
+      "verdict": "pass",
+      "seconds": 0.5,
+      "cost_usd": 0.0
+    },
+    {
+      "command": "Bring the cylinder",
+      "expected": "blue cylinder",
+      "delivered": "blue cylinder",
+      "steps": 6,
+      "verdict": "pass",
+      "seconds": 0.4,
+      "cost_usd": 0.0
+    },
+    {
+      "command": "Bring the cone",
+      "expected": "yellow cone",
+      "delivered": "yellow cone",
+      "steps": 6,
+      "verdict": "pass",
+      "seconds": 0.5,
+      "cost_usd": 0.0
+    },
+    {
+      "command": "Bring the yellow one",
+      "expected": "yellow cone",
+      "delivered": "yellow cone",
+      "steps": 6,
+      "verdict": "pass",
+      "seconds": 0.5,
+      "cost_usd": 0.0
+    },
+    {
+      "command": "Bring the pointy one",
+      "expected": "yellow cone",
+      "delivered": "yellow cone",
+      "steps": 6,
+      "verdict": "pass",
+      "seconds": 0.5,
+      "cost_usd": 0.0
+    },
+    {
+      "command": "Bring the shortest object",
+      "expected": "blue cube",
+      "delivered": "blue cube",
+      "steps": 6,
+      "verdict": "pass",
+      "seconds": 0.4,
+      "cost_usd": 0.0
+    },
+    {
+      "command": "Bring the smallest object",
+      "expected": "blue cube",
+      "delivered": "blue cube",
+      "steps": 6,
+      "verdict": "pass",
+      "seconds": 0.4,
+      "cost_usd": 0.0
+    },
+    {
+      "command": "Bring the cube farthest from the green square",
+      "expected": "red cube",
+      "delivered": "red cube",
+      "steps": 6,
+      "verdict": "pass",
+      "seconds": 0.5,
+      "cost_usd": 0.0
+    },
+    {
+      "command": "Bring the object closest to the green square",
+      "expected": "blue cube",
+      "delivered": "blue cube",
+      "steps": 6,
+      "verdict": "pass",
+      "seconds": 0.4,
+      "cost_usd": 0.0
+    },
+    {
+      "command": "Bring the ball",
+      "expected": "red sphere",
+      "delivered": "red sphere",
+      "steps": 6,
+      "verdict": "pass",
+      "seconds": 0.4,
+      "cost_usd": 0.0
+    }
+  ]
+}

@@ -252,12 +252,6 @@ class Sim:
                 collided = True
                 break
 
-        # Report what actually happened, signed along the heading. An unsigned
-        # norm reports a back-off as forward progress, which is a lie the agent
-        # then reasons from.
-        delta = np.array([self.x, self.y]) - start
-        travelled = float(np.dot(delta, heading_at_start))
-
         if collided:
             f = self._forward()
             sign = 1.0 if step_len >= 0 else -1.0
@@ -269,6 +263,14 @@ class Sim:
             if self.retries >= MAX_RETRIES:
                 self.state = "Done"
                 self.outcome.result = "fail_collision"
+
+        # Measured AFTER the back-off, signed along the heading. Computing it
+        # before the back-off overstates progress by exactly BACKOFF, and an
+        # unsigned norm reports a back-off as forward motion -- either way the
+        # agent reasons from a number that did not happen.
+        delta = np.array([self.x, self.y]) - start
+        travelled = float(np.dot(delta, heading_at_start))
+
         return {
             "collided": collided,
             "distance_travelled": round(travelled, 3),

@@ -40,7 +40,11 @@ class RunLog:
         return str(out.relative_to(self.dir))
 
     def log_step(self, tool: str, args: dict[str, Any], result: Any,
-                 frame_path: str | None, thinking: str = "") -> None:
+                 frame_path: str | None, thinking: str = "",
+                 pose: dict[str, Any] | None = None) -> None:
+        """`pose` is the robot's own x/y/heading, which /state is explicitly
+        allowed to report. It is recorded so the trajectory can be plotted as
+        directness evidence; it says nothing about any object."""
         self.step += 1
         self._write({
             "step": self.step,
@@ -49,6 +53,7 @@ class RunLog:
             "args": args,
             "result": result,
             "frame_path": frame_path,
+            "robot_pose": pose,
             "claude_reasoning": thinking[:600],
         })
 

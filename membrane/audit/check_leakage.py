@@ -42,6 +42,9 @@ ALLOWED_RESULT_KEYS = {
 
 FRAME_RE = re.compile(r"^frames/step_\d{3,4}\.png$")
 
+#: The robot's own pose is permitted (GET /state reports it by design).
+ALLOWED_POSE_KEYS = {"state", "x", "y", "heading", "holding", "retry_count"}
+
 
 def audit_run(run_dir: Path) -> tuple[bool, list[str]]:
     problems: list[str] = []
@@ -72,6 +75,11 @@ def audit_run(run_dir: Path) -> tuple[bool, list[str]]:
             extra = set(res) - allowed
             if extra:
                 problems.append(f"step {d['step']} ({tool}) result has non-allowlisted keys: {sorted(extra)}")
+        pose = d.get("robot_pose")
+        if isinstance(pose, dict):
+            extra = set(pose) - ALLOWED_POSE_KEYS
+            if extra:
+                problems.append(f"step {d['step']} robot_pose has non-allowlisted keys: {sorted(extra)}")
         fp = d.get("frame_path")
         if fp and not FRAME_RE.match(fp):
             problems.append(f"step {d['step']} frame path {fp!r} is not frames/step_NNN.png "

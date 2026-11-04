@@ -88,6 +88,11 @@ HOW TO ACT WELL
   repeatedly or take many tiny steps.
 - If nothing matching the command is visible, turn in steps of 45 to 60 degrees
   to sweep the room rather than guessing a direction.
+- The room deliberately contains items that share an appearance, so a loose
+  command can fit more than one of them. Read the command for every attribute it
+  gives and use all of them together. If two items still fit equally well, pick
+  the one you can reach most directly and COMMIT to it. Switching targets
+  part-way is the worst outcome: it wastes steps and costs directness marks.
 - Once the target is identified, centre it, then close distance in decisive
   moves using the base-row estimate. Leave roughly 0.4 m before picking up.
 - `pickup` succeeds only within 0.5 m and within 30 degrees of straight ahead.
@@ -315,7 +320,7 @@ def run(command: str, model: str, mock: bool, max_steps: int,
 
         # ---- execute ----
         if tool == "finish":
-            log.log_step(tool, args, {"accepted": True}, frame_rel, thinking)
+            log.log_step(tool, args, {"accepted": True}, frame_rel, thinking, pose=st)
             finished_reason = "model_finished"
             break
         if tool == "turn":
@@ -329,7 +334,7 @@ def run(command: str, model: str, mock: bool, max_steps: int,
         else:
             result = {"error": "unknown tool"}
 
-        log.log_step(tool, args, result, frame_rel, thinking)
+        log.log_step(tool, args, result, frame_rel, thinking, pose=st)
         history.append(f"{step}: {tool}({json.dumps(args)}) -> {json.dumps(result)}")
 
         if tool == "drop" and result.get("success"):
