@@ -26,10 +26,12 @@ from __future__ import annotations
 import io
 import queue
 import threading
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
@@ -74,6 +76,55 @@ app = FastAPI(title="Membrane Fetch Engine", version="1.0.0")
 worker = SimWorker()
 
 
+class RunLock:
+    """Exclusive control of the robot.
+
+    The brief requires that nobody touches keyboard or mouse during a judged
+    run. That is not enforceable by convention: an operator console left open in
+    a browser polls and can drive the robot, and an agent run sharing the engine
+    with it produces a nonsense trace -- a turn of 2 degrees that moves the
+    heading by 176, objects delivered that the agent never touched. It happened.
+
+    While a run holds the lock, every mutating endpoint requires its token.
+    """
+
+    def __init__(self) -> None:
+        self.token: str | None = None
+        self.owner: str = ""
+        self.expires: float = 0.0
+
+    def active(self) -> bool:
+        return self.token is not None and time.time() < self.expires
+
+    def claim(self, owner: str, ttl_s: float) -> dict[str, Any]:
+        if self.active():
+            raise HTTPException(409, f"engine is already claimed by {self.owner!r}")
+        self.token = uuid.uuid4().hex
+        self.owner, self.expires = owner, time.time() + ttl_s
+        return {"token": self.token, "owner": owner,
+                "expires_in_s": round(ttl_s, 1)}
+
+    def release(self, token: str | None) -> dict[str, Any]:
+        if self.active() and token != self.token:
+            raise HTTPException(403, "wrong token")
+        self.token, self.owner, self.expires = None, "", 0.0
+        return {"released": True}
+
+    def check(self, token: str | None) -> None:
+        if self.active() and token != self.token:
+            raise HTTPException(
+                409, f"engine is locked by {self.owner!r}; manual control is disabled "
+                     f"while a run is in progress")
+
+
+lock = RunLock()
+
+
+def guard(x_run_token: str | None = Header(default=None)) -> None:
+    """Dependency on every endpoint that changes the world."""
+    lock.check(x_run_token)
+
+
 class MoveBody(BaseModel):
     distance: float = Field(..., description="metres; negative reverses")
 
@@ -106,22 +157,22 @@ def get_depth() -> dict[str, Any]:
 
 
 @app.post("/move")
-def post_move(body: MoveBody) -> dict[str, Any]:
+def post_move(body: MoveBody, _: None = Depends(guard)) -> dict[str, Any]:
     return worker.call(lambda w: w.sim.move(body.distance))
 
 
 @app.post("/turn")
-def post_turn(body: TurnBody) -> dict[str, Any]:
+def post_turn(body: TurnBody, _: None = Depends(guard)) -> dict[str, Any]:
     return worker.call(lambda w: w.sim.turn(body.degrees))
 
 
 @app.post("/pickup")
-def post_pickup() -> dict[str, Any]:
+def post_pickup(_: None = Depends(guard)) -> dict[str, Any]:
     return worker.call(lambda w: w.sim.pickup())
 
 
 @app.post("/drop")
-def post_drop() -> dict[str, Any]:
+def post_drop(_: None = Depends(guard)) -> dict[str, Any]:
     return worker.call(lambda w: w.sim.drop())
 
 
@@ -144,7 +195,7 @@ def _reset(w: SimWorker, body: ResetBody) -> dict[str, Any]:
 
 
 @app.post("/admin/reset")
-def admin_reset(body: ResetBody) -> dict[str, Any]:
+def admin_reset(body: ResetBody, _: None = Depends(guard)) -> dict[str, Any]:
     return worker.call(lambda w: _reset(w, body))
 
 
@@ -162,7 +213,7 @@ def admin_outcome() -> dict[str, Any]:
 
 
 @app.get("/admin/next_action")
-def admin_next_action(target: str) -> dict[str, Any]:
+def admin_next_action(target: str, _: None = Depends(guard)) -> dict[str, Any]:
     """OPERATOR CONSOLE ONLY. Computes the next oracle action toward `target`
     from ground truth, so the browser console can animate a scripted fetch one
     step at a time.
@@ -256,6 +307,22 @@ def console() -> Response:
     and rehearsal; the agent does not use it."""
     html = (Path(__file__).parent / "console.html").read_text()
     return Response(content=html, media_type="text/html")
+
+
+@app.post("/admin/claim")
+def admin_claim(owner: str = "agent", ttl_s: float = 900.0) -> dict[str, Any]:
+    return lock.claim(owner, ttl_s)
+
+
+@app.post("/admin/release")
+def admin_release(x_run_token: str | None = Header(default=None)) -> dict[str, Any]:
+    return lock.release(x_run_token)
+
+
+@app.get("/admin/lock")
+def admin_lock() -> dict[str, Any]:
+    return {"locked": lock.active(), "owner": lock.owner if lock.active() else None,
+            "expires_in_s": round(max(0.0, lock.expires - time.time()), 1) if lock.active() else 0}
 
 
 @app.get("/health")

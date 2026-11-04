@@ -10,6 +10,8 @@ server over HTTP, which is also how the agent and the judges see it.
 """
 from __future__ import annotations
 
+import os
+
 import httpx
 import pytest
 
@@ -19,6 +21,17 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture(scope="module")
 def client():
+    """These tests RESET the live engine, which destroys any run in flight.
+
+    That is not hypothetical: a routine `pytest` during a live agent run
+    teleported the robot back to the origin mid-fetch. They are therefore
+    opt-in, so `pytest` during a demo or a judged run can never touch the
+    engine.
+
+        MEMBRANE_INTEGRATION=1 pytest -m integration
+    """
+    if not os.environ.get("MEMBRANE_INTEGRATION"):
+        pytest.skip("set MEMBRANE_INTEGRATION=1 to run tests that reset the live engine")
     try:
         c = httpx.Client(base_url=BASE, timeout=120.0)
         c.get("/health").raise_for_status()

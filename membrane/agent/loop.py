@@ -17,6 +17,7 @@ import io
 import math
 import json
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -87,19 +88,30 @@ SENSORS
 - `collided` true means you touched something and were pushed back 0.1 m.
 
 HOW TO ACT WELL
-- You are scored on reaching the target directly. Avoid wandering: do not spin
-  repeatedly or take many tiny steps.
-- If nothing matching the command is visible, turn in steps of 45 to 60 degrees
-  to sweep the room rather than guessing a direction.
+MOVEMENT DISCIPLINE -- read this before every decision
+- NEVER TURN TWICE IN A ROW once your target is visible. If your previous action
+  was a turn and you can see the target at all, your next action is a move.
+  Turning repeatedly to perfect the alignment is the single most wasteful thing
+  you can do, and it is scored against you.
+- "Centred" means within about 100 pixels of column 320. That is close enough to
+  drive. You re-centre naturally as you get nearer, so do not chase the exact
+  middle from far away.
+- SWEEPING IS ONLY FOR WHEN NOTHING IS VISIBLE. Turn about 50 degrees at a time
+  while the thing you want is absent from the frame. The INSTANT it appears, stop
+  sweeping: turn by the angle you compute from its pixel column, or if it is
+  already roughly centred, move. Do not continue a fixed sweep past something you
+  have just reported seeing.
+- If your own reason says you can see it, your action must act on it. Reporting
+  the target and then sweeping past it is a contradiction.
 - The room deliberately contains items that share an appearance, so a loose
   command can fit more than one of them. Read the command for every attribute it
   gives and use all of them together. If two items still fit equally well, pick
   the one you can reach most directly and COMMIT to it. Switching targets
   part-way is the worst outcome: it wastes steps and costs directness marks.
-- RE-CHECK THE TARGET IN EVERY FRAME. After each move it will have shifted in
-  the image. If its centre has drifted more than about 60 pixels from column 320,
-  turn to re-centre BEFORE moving again. Driving forward on a stale heading is
-  the most common way to sail straight past the target.
+- After a move the target will have shifted. Re-centre only when it has drifted
+  beyond roughly 100 pixels from column 320; otherwise keep closing. Driving on a
+  badly stale heading sails past the target, but correcting every few pixels
+  never gets there at all.
 - Close distance decisively using the base-row estimate: move the estimated range
   minus 0.4 m in one go. Repeated 0.1 m nudges waste the step budget and cost
   directness marks. Only use small steps once you are inside about 0.7 m.
@@ -109,10 +121,10 @@ HOW TO ACT WELL
 - While carrying, the held item occupies the lower middle of the frame. The
   delivery patch is a low raised platform on the floor, brightly coloured with a
   pale rim, and it sits somewhere you have probably not looked yet.
-- THE CARRY LEG IS WHERE RUNS ARE LOST. Do not drive forward hoping the platform
-  is that way. If you cannot actually SEE the platform in the current frame, say
-  so in your reason and TURN to search -- sweep in steps of about 50 degrees
-  until it appears. Only drive once it is genuinely visible and centred.
+- THE CARRY LEG IS WHERE RUNS ARE LOST, in one of two ways. Driving forward
+  hoping the platform is that way, or sweeping straight past it after spotting
+  it. If it is not in frame, sweep. If it IS in frame, immediately turn by the
+  computed angle to centre it and then drive -- never another blind sweep step.
 - Never claim in your reason that you can see something you cannot. An honest
   "the platform is not in view, sweeping" is worth far more than a guess, because
   the next decision is made from what you wrote.
@@ -142,7 +154,15 @@ REASON_FIELD = {
 TOOLS: list[dict[str, Any]] = [
     {
         "name": "turn",
-        "description": "Rotate in place. Positive degrees turn right, negative turn left.",
+        "description": (
+            "Rotate in place. POSITIVE turns RIGHT, NEGATIVE turns LEFT.\n"
+            "If what you want is VISIBLE in the frame, you must not guess a direction: "
+            "set degrees = (u - 320) / 640 * 90, where u is its horizontal pixel column. "
+            "Column 150 is left of centre, so that gives about -40 (turn LEFT). "
+            "Column 500 is right of centre, so that gives about +25 (turn RIGHT). "
+            "Only use a fixed sweep of about 50 degrees when the frame contains "
+            "nothing you are looking for."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -193,6 +213,11 @@ TOOLS: list[dict[str, Any]] = [
 
 
 # ---------------------------------------------------------------- engine ----
+#: Set while a run holds exclusive control of the engine, so an operator console
+#: left open in a browser cannot drive the robot mid-run.
+_TOKEN: str | None = None
+
+
 def _get(path: str) -> Any:
     with urllib.request.urlopen(f"{ENGINE}{path}", timeout=30) as r:
         ct = r.headers.get("content-type", "")
@@ -201,14 +226,36 @@ def _get(path: str) -> Any:
 
 
 def _post(path: str, body: dict[str, Any] | None = None) -> Any:
+    headers = {"Content-Type": "application/json"}
+    if _TOKEN:
+        headers["X-Run-Token"] = _TOKEN
     req = urllib.request.Request(
-        f"{ENGINE}{path}",
-        data=json.dumps(body or {}).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+        f"{ENGINE}{path}", data=json.dumps(body or {}).encode(),
+        headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=60) as r:
         return json.loads(r.read().decode())
+
+
+def _claim(owner: str, ttl_s: float) -> None:
+    global _TOKEN
+    _TOKEN = None
+    try:
+        _TOKEN = _post(f"/admin/claim?owner={owner}&ttl_s={ttl_s}").get("token")
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(
+            "engine is already claimed -- another run or the operator console is "
+            "driving it. Stop that first, or POST /admin/release."
+        ) from e
+
+
+def _release() -> None:
+    global _TOKEN
+    if _TOKEN:
+        try:
+            _post("/admin/release")
+        except Exception:
+            pass
+        _TOKEN = None
 
 
 # ------------------------------------------------------------ mock policy ---
@@ -315,7 +362,8 @@ def _mock_decide(jpg: bytes, st: dict[str, Any], depth: float | None,
 # ------------------------------------------------------------------ loop ----
 def run(command: str, model: str | None, mock: bool, max_steps: int,
         obstacles: bool, run_id: str | None = None,
-        provider: str = "anthropic", rpm: int | None = None) -> dict[str, Any]:
+        provider: str = "anthropic", rpm: int | None = None,
+        budget: float | None = None) -> dict[str, Any]:
     load_env()
     assert_prompt_is_clean(SYSTEM, TOOLS)          # startup leakage gate
 
@@ -323,9 +371,19 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
     run_dir = RUNS / f"run_{run_id}"
     log = RunLog(run_dir, command)
 
+    # Exclusive control for the whole run. Without this an open console shares
+    # the robot and the trace becomes fiction.
+    _claim(f"agent:{run_id}", ttl_s=max(300.0, max_steps * 30.0))
     _post("/admin/reset", {"command": command, "obstacles": obstacles, "record": True})
     vlm = None if mock else build_vlm(provider, model, rpm=rpm)
     spend = {"input": 0, "output": 0, "cache_read": 0, "calls": 0, "usd": 0.0}
+
+    # Hard budget guard. The brief sets a $40 target with a mentor alert at $30
+    # and no hard block, so nothing outside this process will stop a runaway
+    # loop. Checked BEFORE each call, against cumulative spend across all runs,
+    # because the money is gone once the request is sent.
+    started_at = _read_spend()
+    budget_stop = False
     memory: dict[str, Any] = {}
     history: list[str] = []
     finished_reason = "max_steps"
@@ -341,6 +399,16 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
             f"holding {str(st['holding']).lower()} | depth_ahead {depth} | "
             f"collisions {st['retry_count']}"
         )
+
+        if not mock and budget is not None:
+            projected = started_at + spend["usd"]
+            if projected >= budget:
+                budget_stop = True
+                log.finish("budget_exceeded", {
+                    "budget_usd": budget, "cumulative_usd": round(projected, 4),
+                    "note": "run halted before the next API call",
+                })
+                break
 
         if mock:
             tool, args, thinking = _mock_decide(jpg, st, depth, memory)
@@ -389,6 +457,7 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
             break
 
     outcome = _get("/admin/outcome")
+    _release()
     total = _commit_spend(spend["usd"]) if not mock else _read_spend()
     log.finish(finished_reason, {
         "engine_outcome": outcome,
@@ -401,11 +470,16 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
         "run_cost_usd": round(spend["usd"], 4),
         "cumulative_usd": total,
     })
-    return {"run_dir": str(run_dir), "steps": log.step, "reason": finished_reason,
-            "engine_outcome": outcome, "cost_usd": round(spend["usd"], 4),
-            "cumulative_usd": total,
-            "provider": "mock" if mock else vlm.name,
-            "model": "mock" if mock else vlm.model}
+    res = {"run_dir": str(run_dir), "steps": log.step,
+           "reason": "budget_exceeded" if budget_stop else finished_reason,
+           "engine_outcome": outcome, "cost_usd": round(spend["usd"], 4),
+           "cumulative_usd": total,
+           "provider": "mock" if mock else vlm.name,
+           "model": "mock" if mock else vlm.model}
+    if budget is not None:
+        res["budget_usd"] = budget
+        res["budget_remaining_usd"] = round(budget - total, 4)
+    return res
 
 
 SPEND_FILE = RUNS / "spend.json"
@@ -440,6 +514,9 @@ def main() -> None:
     ap.add_argument("--model", default=None, help="provider default if omitted")
     ap.add_argument("--rpm", type=int, default=None,
                     help="requests per minute ceiling; 0 disables pacing")
+    ap.add_argument("--budget", type=float, default=35.0,
+                    help="halt before any call that would push CUMULATIVE spend "
+                         "past this. Brief targets $40 with an alert at $30.")
     ap.add_argument("--mock", action="store_true", help="free CV policy; no API calls")
     ap.add_argument("--max-steps", type=int, default=35, help="brief: 25 soft, 60 hard")
     ap.add_argument("--obstacles", action="store_true", help="stretch goal: blocked path")
@@ -448,7 +525,7 @@ def main() -> None:
 
     try:
         res = run(a.command, a.model, a.mock, a.max_steps, a.obstacles, a.run_id,
-                  a.provider, a.rpm)
+                  a.provider, a.rpm, a.budget)
     except LeakageError as e:
         raise SystemExit(f"LEAKAGE GATE FAILED -- run aborted: {e}")
     except RuntimeError as e:

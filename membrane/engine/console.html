@@ -46,7 +46,8 @@
   <span class="dot" id="dot"></span>
   <div><h1>Membrane Fetch — Operator Console</h1>
        <div class="sub">drives the engine through the same seven endpoints the agent uses</div></div>
-  <span class="chip" id="stateChip" style="margin-left:auto">—</span>
+  <span class="chip" id="lockChip" style="margin-left:auto;display:none">—</span>
+  <span class="chip" id="stateChip">—</span>
   <span class="chip" id="holdChip">—</span>
 </header>
 
@@ -126,9 +127,20 @@ function refreshImages(){
   $('#top').src = '/admin/overhead?t=' + t;
 }
 
+function setLocked(info){
+  const on = !!(info && info.locked);
+  const chip = $('#lockChip');
+  chip.style.display = on ? 'inline-flex' : 'none';
+  if(on) chip.textContent = `locked by ${info.owner} — manual control disabled`;
+  chip.style.color = 'var(--warn)';
+  document.querySelectorAll('[data-turn],[data-move],#bPickup,#bDrop,#bReset,#bRun')
+          .forEach(b => b.disabled = on);
+}
+
 async function refreshState(){
   try{
-    const [st, dp] = await Promise.all([jget('/state'), jget('/depth')]);
+    const [st, dp, lk] = await Promise.all([jget('/state'), jget('/depth'), jget('/admin/lock')]);
+    setLocked(lk);
     $('#sHead').textContent  = st.heading.toFixed(1) + '°';
     $('#sX').textContent     = st.x.toFixed(2);
     $('#sY').textContent     = st.y.toFixed(2);

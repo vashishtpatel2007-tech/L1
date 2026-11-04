@@ -99,3 +99,36 @@ class TestFrameNaming:
     def test_descriptive_or_malformed_names_are_rejected(self, name):
         with pytest.raises(LeakageError):
             assert_frame_name_is_neutral(name)
+
+
+class TestBudgetGuard:
+    """The brief sets a $40 target with 'no hard block', so nothing outside this
+    process stops a runaway loop. The guard must be checked before a call, not
+    after, because the money is spent the moment the request goes out."""
+
+    def test_spend_file_round_trips(self, tmp_path, monkeypatch):
+        import agent.loop as L
+
+        monkeypatch.setattr(L, "SPEND_FILE", tmp_path / "spend.json")
+        assert L._read_spend() == 0.0
+        assert L._commit_spend(1.25) == 1.25
+        assert L._commit_spend(0.75) == 2.0
+        assert L._read_spend() == 2.0
+
+    def test_run_count_increments(self, tmp_path, monkeypatch):
+        import json
+
+        import agent.loop as L
+
+        monkeypatch.setattr(L, "SPEND_FILE", tmp_path / "spend.json")
+        L._commit_spend(0.1)
+        L._commit_spend(0.1)
+        assert json.loads((tmp_path / "spend.json").read_text())["runs"] == 2
+
+    def test_a_corrupt_spend_file_reads_as_zero_rather_than_crashing(self, tmp_path, monkeypatch):
+        import agent.loop as L
+
+        f = tmp_path / "spend.json"
+        f.write_text("{not json")
+        monkeypatch.setattr(L, "SPEND_FILE", f)
+        assert L._read_spend() == 0.0
