@@ -140,13 +140,21 @@ class TurnBody(BaseModel):
 
 
 class ResetBody(BaseModel):
+    """Omitted fields mean UNCHANGED, not "back to the default scene".
+
+    They used to carry concrete defaults, so any caller that reset positions
+    without naming the layout silently rebuilt the fixed demo scene. The oracle
+    does exactly that at the start of every run, which wiped a randomised scene
+    before it could be driven -- every clutter run failed with "no object
+    labelled ...". A reset must never change the world unless asked.
+    """
     command: str = ""
-    obstacles: bool = False
     record: bool = True
     randomise: bool = False
     seed: int | None = None          # omit for a different scene every time
     n_objects: int = 5               # the PDF allows 4 to 6
-    clutter: str = "none"            # none | pickup | drop | both | full
+    obstacles: bool | None = None    # None -> keep the current layout
+    clutter: str | None = None       # None -> keep the current layout
 
 
 # ------------------------------------------------------------ agent-facing --
@@ -195,17 +203,20 @@ def _reset(w: SimWorker, body: ResetBody) -> dict[str, Any]:
     closing the first corrupts the context -- so it happens only when the scene
     genuinely changes, never on a plain reset between runs.
     """
+    obstacles = w.obstacles if body.obstacles is None else body.obstacles
+    clutter = w.clutter if body.clutter is None else body.clutter
+
     rebuilt = False
-    want_new_scene = body.randomise or body.obstacles != w.obstacles or body.clutter != w.clutter
+    want_new_scene = body.randomise or obstacles != w.obstacles or clutter != w.clutter
 
     if want_new_scene:
         seed = body.seed if body.seed is not None else random.randrange(1, 10**9)
         scene = (random_scene(seed=seed, n_objects=body.n_objects,
-                              clutter=body.clutter, with_obstacles=body.obstacles)
-                 if body.randomise else default_scene(with_obstacles=body.obstacles))
+                              clutter=clutter, with_obstacles=obstacles)
+                 if body.randomise else default_scene(with_obstacles=obstacles))
         w.sim.close()
         w.sim = Sim(scene=scene, record_video=body.record)
-        w.obstacles, w.clutter = body.obstacles, body.clutter
+        w.obstacles, w.clutter = obstacles, clutter
         w.seed = seed if body.randomise else None
         rebuilt = True
     else:
@@ -213,7 +224,7 @@ def _reset(w: SimWorker, body: ResetBody) -> dict[str, Any]:
         w.sim.reset_state()
 
     w.command = body.command
-    return {"ok": True, "obstacles": body.obstacles, "recording": body.record,
+    return {"ok": True, "obstacles": obstacles, "recording": body.record,
             "model_rebuilt": rebuilt, "randomised": body.randomise,
             "seed": w.seed, "clutter": w.clutter,
             "n_objects": len(w.sim.scene.objects)}

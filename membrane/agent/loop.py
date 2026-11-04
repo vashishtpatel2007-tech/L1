@@ -449,7 +449,10 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
     # Exclusive control for the whole run. Without this an open console shares
     # the robot and the trace becomes fiction.
     _claim(f"agent:{run_id}", ttl_s=max(300.0, max_steps * 30.0))
-    _post("/admin/reset", {"command": command, "obstacles": obstacles, "record": True})
+    reset: dict[str, Any] = {"command": command, "record": True}
+    if obstacles:                         # leave a randomised scene untouched
+        reset["obstacles"] = True
+    _post("/admin/reset", reset)
     vlm = None if mock else build_vlm(provider, model, rpm=rpm)
     spend = {"input": 0, "output": 0, "cache_read": 0, "calls": 0, "usd": 0.0}
 

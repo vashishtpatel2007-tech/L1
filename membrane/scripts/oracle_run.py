@@ -18,7 +18,12 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import planner  # noqa: E402
 
 ENGINE = "http://127.0.0.1:8080"
 
@@ -44,20 +49,49 @@ def rel(target_abs: float, heading: float) -> float:
     return ((target_abs - heading + 180) % 360) - 180
 
 
-def go_to(tx: float, ty: float, standoff: float, steps: list[str]) -> None:
-    """Turn to face a point, then close to `standoff` metres, retrying on contact."""
-    for _ in range(6):
+def drive_to(tx: float, ty: float, steps: list[str], tol: float = 0.08) -> bool:
+    """Turn to face a point and close on it. One hop, no planning."""
+    for _ in range(4):
         st = get("/state")
         d = math.hypot(tx - st["x"], ty - st["y"])
-        if d <= standoff + 0.04:
-            return
+        if d <= tol:
+            return True
         want = rel(bearing(st["x"], st["y"], tx, ty), st["heading"])
         if abs(want) > 2.0:
             post("/turn", {"degrees": round(want, 2)}); steps.append("turn")
-        r = post("/move", {"distance": round(d - standoff, 3)}); steps.append("move")
-        if r["collided"]:
-            post("/turn", {"degrees": 35}); steps.append("turn")
-            post("/move", {"distance": 0.45}); steps.append("move")
+        r = post("/move", {"distance": round(d, 3)}); steps.append("move")
+        if not r["collided"]:
+            return math.hypot(tx - get("/state")["x"], ty - get("/state")["y"]) <= tol + 0.25
+        # Contact: slide around it rather than shoving.
+        post("/turn", {"degrees": 40}); steps.append("turn")
+        post("/move", {"distance": 0.40}); steps.append("move")
+    return False
+
+
+def go_to(tx: float, ty: float, standoff: float, steps: list[str],
+          obstacles=None, skip=()) -> None:
+    """Route to a standoff around (tx,ty), detouring around anything in the way.
+
+    A straight run fails as soon as objects are not neatly spread: the line
+    clips another object, or the robot ends up with some OTHER object nearer,
+    and /pickup takes whatever is closest -- quietly fetching the wrong item.
+    """
+    st = get("/state")
+    start = (st["x"], st["y"])
+
+    if obstacles:
+        tgt = next((o for o in obstacles if math.dist(o["pos"], (tx, ty)) < 1e-6), None)
+        goal = (planner.approach_pose(tgt, obstacles, standoff, prefer_from=start)
+                if tgt else (tx, ty))
+        route = planner.plan(start, goal, obstacles,
+                             skip=tuple(skip) + ((tgt["label"],) if tgt else ()))
+    else:
+        d = math.hypot(tx - start[0], ty - start[1]) or 1.0
+        goal = (tx - (tx - start[0]) / d * standoff, ty - (ty - start[1]) / d * standoff)
+        route = [goal]
+
+    for wp in route:
+        drive_to(wp[0], wp[1], steps)
 
 
 def main() -> None:
@@ -68,8 +102,10 @@ def main() -> None:
     ap.add_argument("--clip", default="")
     a = ap.parse_args()
 
-    post("/admin/reset", {"command": a.command or f"Bring the {a.target}",
-                          "obstacles": a.obstacles, "record": True})
+    reset = {"command": a.command or f"Bring the {a.target}", "record": True}
+    if a.obstacles:                       # only name it when deliberately setting it
+        reset["obstacles"] = True
+    post("/admin/reset", reset)
     truth = get("/admin/truth")
     obj = next((o for o in truth["objects"] if o["label"] == a.target), None)
     if obj is None:
@@ -77,19 +113,48 @@ def main() -> None:
                          f"{[o['label'] for o in truth['objects']]}")
 
     steps: list[str] = []
-    go_to(obj["pos"][0], obj["pos"][1], 0.42, steps)
+    others = truth["objects"]
+    go_to(obj["pos"][0], obj["pos"][1], 0.40, steps, obstacles=others)
 
-    for _ in range(4):
+    # Waypoint routing leaves the robot facing its direction of TRAVEL, not the
+    # target, and /pickup requires the object within +/-30 degrees of heading.
+    # Driving straight at the target used to supply this for free.
+    st = get("/state")
+    want = rel(bearing(st["x"], st["y"], obj["pos"][0], obj["pos"][1]), st["heading"])
+    if abs(want) > 2.0:
+        post("/turn", {"degrees": round(want, 2)}); steps.append("turn")
+
+    for attempt in range(5):
         if post("/pickup").get("success"):
             steps.append("pickup")
             break
-        post("/move", {"distance": 0.12}); steps.append("move")
+        # Not in reach: re-aim and inch in.
+        st = get("/state")
+        want = rel(bearing(st["x"], st["y"], obj["pos"][0], obj["pos"][1]), st["heading"])
+        if abs(want) > 4.0:
+            post("/turn", {"degrees": round(want, 2)}); steps.append("turn")
+        post("/move", {"distance": 0.14}); steps.append("move")
     else:
         print(json.dumps({"ok": False, "stage": "pickup", "steps": len(steps)}, indent=2))
         return
 
+    # Carrying: the held item moves with us, so exclude it from the obstacles.
     dz = truth["drop_zone"]
-    go_to(dz[0], dz[1], 0.30, steps)
+    remaining = [o for o in others if o["label"] != a.target]
+    # A released object lands CARRY_FWD (0.60 m) AHEAD of the robot, so driving
+    # onto the zone centre throws it past the far edge. Stop one carry-length
+    # short, facing in, and it comes to rest on the platform.
+    st = get("/state")
+    vx, vy = dz[0] - st["x"], dz[1] - st["y"]
+    vn = math.hypot(vx, vy) or 1.0
+    stand = (dz[0] - vx / vn * 0.60, dz[1] - vy / vn * 0.60)
+    route = planner.plan((st["x"], st["y"]), stand, remaining)
+    for wp in route:
+        drive_to(wp[0], wp[1], steps, tol=0.22)
+    st = get("/state")
+    want = rel(bearing(st["x"], st["y"], dz[0], dz[1]), st["heading"])
+    if abs(want) > 3.0:
+        post("/turn", {"degrees": round(want, 2)}); steps.append("turn")
     drop = post("/drop"); steps.append("drop")
 
     out = get("/admin/outcome")
