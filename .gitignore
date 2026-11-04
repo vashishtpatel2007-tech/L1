@@ -8,10 +8,13 @@ dist/
 .DS_Store
 data/app.db
 data/raw/uploads/
+data/raw/images/
+data/raw/sample.csv
 data/models/*.pt
 data/models/*.pkl
 data/index/*.npz
+runs/**/frames/
+runs/*.mp4
+runs/spend.json
 *.log
 .pytest_cache/
-data/raw/images/
-data/raw/sample.csv
