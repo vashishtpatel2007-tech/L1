@@ -117,9 +117,13 @@ HOW TO ACT WELL
 - `pickup` succeeds only within 0.5 m and within 30 degrees of straight ahead.
   If it fails, adjust and approach again.
 - After a collision, turn away before moving again. Three collisions end the run.
-- While carrying, the held item occupies the lower middle of the frame. The
-  delivery patch is a low raised platform on the floor, brightly coloured with a
-  pale rim, and it sits somewhere you have probably not looked yet.
+- THE ITEM YOU ARE CARRYING IS ALWAYS IN THE FRAME, filling the lower middle,
+  and it looks exactly like the thing you were sent to fetch -- because it is.
+  Ignore it completely. It is not a target, it is not something on the floor
+  ahead, and it tells you nothing about where to go. If `holding` is true, the
+  ONLY thing you are looking for is the delivery platform.
+- The delivery platform is a low raised slab, brightly coloured with a pale rim,
+  and it sits somewhere you have probably not looked yet.
 - THE CARRY LEG IS WHERE RUNS ARE LOST, in one of two ways. Driving forward
   hoping the platform is that way, or sweeping straight past it after spotting
   it. If it is not in frame, sweep. If it IS in frame, immediately turn by the
