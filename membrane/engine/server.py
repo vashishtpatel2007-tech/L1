@@ -384,7 +384,7 @@ _agent_proc: dict[str, Any] = {"proc": None, "run_id": None, "started": 0.0}
 
 class AgentRunBody(BaseModel):
     command: str
-    provider: str = "gemini"
+    provider: str = "local"
     model: str = ""
     max_steps: int = 60
     rpm: int = 12

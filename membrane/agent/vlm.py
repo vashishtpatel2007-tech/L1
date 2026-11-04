@@ -38,7 +38,8 @@ RETRY_CODES = {408, 429, 500, 502, 503, 504, 529}
 #: Requests per minute to stay under, per provider. Free Gemini tiers are tight
 #: (5-15 rpm) and a 429 mid-run is indistinguishable from a broken agent, so the
 #: loop paces itself rather than discovering the limit the hard way.
-DEFAULT_RPM = {"anthropic": 0, "gemini": 10, "groq": 25}   # 0 = unpaced
+DEFAULT_RPM = {"anthropic": 0, "gemini": 10, "groq": 25,
+               "local": 0, "openrouter": 20}          # 0 = unpaced
 
 _last_call: dict[str, float] = {}
 
@@ -262,6 +263,115 @@ class GroqVLM:
         return d
 
 
+# ------------------------------------------------------------------ local --
+class LocalVLM:
+    """A vision model running on this machine through Ollama.
+
+    Why this matters more than another hosted key: there is no quota, no rate
+    limit and no per-call cost, so the loop can be exercised as hard as the
+    schedule allows. It also runs with the network unplugged, which is the one
+    failure mode a venue reliably provides.
+
+    Ollama speaks the OpenAI chat format at /v1, so this is the same wire
+    protocol as Groq with a different base URL and no key.
+    """
+
+    name = "local"
+    env_key = "OLLAMA_HOST"          # optional; only to point at another host
+    prices = {}                      # free
+
+    def __init__(self, model: str = "qwen2.5vl:7b", max_tokens: int = 700,
+                 rpm: int | None = None) -> None:
+        self.model, self.max_tokens = model, max_tokens
+        self.rpm = 0 if rpm is None else rpm          # no limit worth respecting
+        self.host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
+        self.key = "local"                            # build() checks truthiness
+
+    def decide(self, system: str, tools: list[dict], image_jpeg: bytes, text: str) -> Decision:
+        oa_tools = [{"type": "function", "function": {
+            "name": t["name"], "description": t.get("description", ""),
+            "parameters": t.get("input_schema") or {"type": "object", "properties": {}},
+        }} for t in tools]
+        b64 = base64.b64encode(image_jpeg).decode()
+        body = {
+            "model": self.model, "tools": oa_tools, "tool_choice": "required",
+            "options": {"temperature": 0.2, "num_predict": self.max_tokens},
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                    {"type": "text", "text": text},
+                ]},
+            ],
+        }
+        out = _post(f"{self.host}/v1/chat/completions", {}, body)
+        d = Decision(tool=None, provider=self.name, model=self.model)
+        msg = (out.get("choices") or [{}])[0].get("message", {})
+        d.text = msg.get("content") or ""
+        for call in msg.get("tool_calls") or []:
+            fn = call.get("function", {})
+            d.tool = fn.get("name")
+            raw = fn.get("arguments")
+            try:
+                d.args = raw if isinstance(raw, dict) else json.loads(raw or "{}")
+            except json.JSONDecodeError:
+                d.args = {}
+        u = out.get("usage", {})
+        d.usage = {"input": int(u.get("prompt_tokens", 0)),
+                   "output": int(u.get("completion_tokens", 0)), "cache_read": 0}
+        return d
+
+
+# ------------------------------------------------------------- openrouter --
+class OpenRouterVLM:
+    """One key, many hosted models, several with a free tier. Useful when a
+    single provider's daily quota is spent but the schedule is not."""
+
+    name = "openrouter"
+    env_key = "OPENROUTER_API_KEY"
+    prices = {}
+
+    def __init__(self, model: str = "meta-llama/llama-3.2-11b-vision-instruct:free",
+                 max_tokens: int = 700, rpm: int | None = None) -> None:
+        self.model, self.max_tokens = model, max_tokens
+        self.rpm = 20 if rpm is None else rpm
+        self.key = os.environ.get(self.env_key, "")
+
+    def decide(self, system: str, tools: list[dict], image_jpeg: bytes, text: str) -> Decision:
+        oa_tools = [{"type": "function", "function": {
+            "name": t["name"], "description": t.get("description", ""),
+            "parameters": t.get("input_schema") or {"type": "object", "properties": {}},
+        }} for t in tools]
+        b64 = base64.b64encode(image_jpeg).decode()
+        body = {
+            "model": self.model, "max_tokens": self.max_tokens, "tools": oa_tools,
+            "tool_choice": "required",
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                    {"type": "text", "text": text},
+                ]},
+            ],
+        }
+        out = _post("https://openrouter.ai/api/v1/chat/completions",
+                    {"Authorization": f"Bearer {self.key}"}, body)
+        d = Decision(tool=None, provider=self.name, model=self.model)
+        msg = (out.get("choices") or [{}])[0].get("message", {})
+        d.text = msg.get("content") or ""
+        for call in msg.get("tool_calls") or []:
+            fn = call.get("function", {})
+            d.tool = fn.get("name")
+            try:
+                d.args = json.loads(fn.get("arguments") or "{}")
+            except json.JSONDecodeError:
+                d.args = {}
+        u = out.get("usage", {})
+        d.usage = {"input": int(u.get("prompt_tokens", 0)),
+                   "output": int(u.get("completion_tokens", 0)), "cache_read": 0}
+        return d
+
+
 class FallbackVLM:
     """Tries several models in order, moving on when one is unavailable.
 
@@ -304,7 +414,8 @@ class FallbackVLM:
         return Decision(tool=None, error=f"all models unavailable: {str(last)[:200]}")
 
 
-PROVIDERS = {"anthropic": AnthropicVLM, "gemini": GeminiVLM, "groq": GroqVLM}
+PROVIDERS = {"anthropic": AnthropicVLM, "gemini": GeminiVLM, "groq": GroqVLM,
+             "local": LocalVLM, "openrouter": OpenRouterVLM}
 #: Gemini's default is a FALLBACK CHAIN, not one model. Free tiers hand out
 #: per-model 429s and the newer previews return 503 under load, so a single
 #: default leaves the console dead on arrival for no reason to do with the agent.
@@ -312,6 +423,8 @@ DEFAULT_MODEL = {
     "anthropic": "claude-sonnet-5-5",
     "gemini": "gemini-flash-lite-latest,gemini-3.6-flash,gemini-2.5-flash-lite",
     "groq": "meta-llama/llama-4-scout-17b-16e-instruct",
+    "local": "qwen2.5vl:7b",
+    "openrouter": "meta-llama/llama-3.2-11b-vision-instruct:free",
 }
 
 
@@ -334,8 +447,37 @@ def cost_usd(vlm, usage: dict[str, int]) -> float:
     return (usage.get("input", 0) / 1e6) * pin + (usage.get("output", 0) / 1e6) * pout
 
 
+def _ollama_up() -> bool:
+    host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
+    try:
+        with urllib.request.urlopen(f"{host}/api/tags", timeout=2) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
 def available() -> dict[str, bool]:
-    """Which providers are usable right now, without revealing any key."""
-    return {name: bool(os.environ.get(cls.env_key)
-                       or (name == "gemini" and os.environ.get("GOOGLE_API_KEY")))
-            for name, cls in PROVIDERS.items()}
+    """Which providers are usable right now, without revealing any key.
+
+    `local` is reported available only when the daemon actually answers, since
+    an installed-but-stopped Ollama is not a usable provider.
+    """
+    # Load .env defensively: a caller that has not done so would be told a key
+    # is missing when it is sitting in the file, and the console would grey out
+    # a provider that works perfectly well.
+    try:
+        from .env import load as _load_env
+
+        _load_env()
+    except Exception:
+        pass
+
+    out = {}
+    for name, cls in PROVIDERS.items():
+        if name == "local":
+            out[name] = _ollama_up()
+        elif name == "gemini":
+            out[name] = bool(os.environ.get(cls.env_key) or os.environ.get("GOOGLE_API_KEY"))
+        else:
+            out[name] = bool(os.environ.get(cls.env_key))
+    return out
