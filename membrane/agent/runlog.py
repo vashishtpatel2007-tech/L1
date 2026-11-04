@@ -5,6 +5,7 @@ and frames saved as PNG beside the log. Judges read these logs for 25 of the
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,12 @@ class RunLog:
     def _write(self, obj: dict[str, Any]) -> None:
         with self.path.open("a") as f:
             f.write(json.dumps(obj) + "\n")
+
+    def progress(self, phase: str, step: int) -> None:
+        path = self.dir / "progress.json"
+        temp = self.dir / "progress.tmp"
+        temp.write_text(json.dumps({"phase": phase, "step": step, "ts": time.time()}), encoding="utf-8")
+        os.replace(temp, path)
 
     def save_frame(self, jpg_bytes: bytes) -> str:
         """Frames are named by step index only -- never by what is in them."""

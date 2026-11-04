@@ -324,7 +324,7 @@ class AgentRunBody(BaseModel):
     command: str
     provider: str = "gemini"
     model: str = ""
-    max_steps: int = 32
+    max_steps: int = 60
     rpm: int = 12
     obstacles: bool = False
 
@@ -339,9 +339,9 @@ def admin_agent_run(body: AgentRunBody) -> dict[str, Any]:
     if not body.command.strip():
         raise HTTPException(400, "command is empty")
 
-    run_id = f"ui{int(time.time()) % 100000}"
+    run_id = f"ui{uuid.uuid4().hex[:12]}"
     root = Path(__file__).resolve().parents[1]
-    cmd = [sys.executable, "-m", "agent.loop",
+    cmd = [sys.executable, "-X", "utf8", "-u", "-m", "agent.loop",
            "--command", body.command.strip(),
            "--provider", body.provider,
            "--max-steps", str(body.max_steps),
@@ -352,10 +352,14 @@ def admin_agent_run(body: AgentRunBody) -> dict[str, Any]:
     if body.obstacles:
         cmd.append("--obstacles")
 
-    _agent_proc.update(
-        proc=subprocess.Popen(cmd, cwd=str(root), stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT, text=True),
-        run_id=run_id, started=time.time())
+    # Persist startup/API failures: a pipe was consumed by the first status
+    # poll, so refreshing the console erased the only useful error message.
+    run_dir = root.parent / "runs" / f"run_{run_id}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    with (run_dir / "agent.stdout.log").open("w", encoding="utf-8") as output:
+        proc = subprocess.Popen(cmd, cwd=str(root), stdout=output,
+                                stderr=subprocess.STDOUT, text=True)
+    _agent_proc.update(proc=proc, run_id=run_id, started=time.time())
     return {"started": True, "run_id": run_id, "command": body.command.strip(),
             "provider": body.provider, "model": body.model or "(provider default)"}
 
@@ -387,14 +391,20 @@ def admin_agent_status(run_id: str = "") -> dict[str, Any]:
                 final = d
 
     tail = ""
-    if not running and proc is not None and proc.stdout is not None and proc.poll() is not None:
+    output = log.parent / "agent.stdout.log"
+    if not running and output.exists():
+        tail = output.read_text(encoding="utf-8", errors="replace")[-2000:]
+    returncode = proc.poll() if proc is not None and rid == _agent_proc["run_id"] else None
+    progress = {}
+    progress_path = log.parent / "progress.json"
+    if progress_path.exists():
         try:
-            tail = (proc.stdout.read() or "")[-700:]
-            proc.stdout.close()
-        except Exception:
+            progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
             pass
     return {"run_id": rid, "running": running, "steps": steps, "final": final,
-            "stdout_tail": tail,
+            "stdout_tail": tail, "returncode": returncode,
+            "progress": progress,
             "elapsed_s": round(time.time() - _agent_proc["started"], 1)}
 
 

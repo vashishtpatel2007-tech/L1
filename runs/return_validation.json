@@ -1,0 +1,92 @@
+[
+  {
+    "target": "red sphere",
+    "obstacles": false,
+    "result": "pass",
+    "steps": 8,
+    "return_seconds": 0.25,
+    "marker_error_m": 0.069,
+    "collisions": 0
+  },
+  {
+    "target": "red cube",
+    "obstacles": false,
+    "result": "pass",
+    "steps": 8,
+    "return_seconds": 0.31,
+    "marker_error_m": 0.069,
+    "collisions": 0
+  },
+  {
+    "target": "blue cube",
+    "obstacles": false,
+    "result": "pass",
+    "steps": 8,
+    "return_seconds": 0.19,
+    "marker_error_m": 0.069,
+    "collisions": 0
+  },
+  {
+    "target": "blue cylinder",
+    "obstacles": false,
+    "result": "pass",
+    "steps": 8,
+    "return_seconds": 0.17,
+    "marker_error_m": 0.069,
+    "collisions": 0
+  },
+  {
+    "target": "yellow cone",
+    "obstacles": false,
+    "result": "pass",
+    "steps": 8,
+    "return_seconds": 0.16,
+    "marker_error_m": 0.069,
+    "collisions": 0
+  },
+  {
+    "target": "red sphere",
+    "obstacles": true,
+    "result": "pass",
+    "steps": 12,
+    "return_seconds": 0.31,
+    "marker_error_m": 0.069,
+    "collisions": 0
+  },
+  {
+    "target": "red cube",
+    "obstacles": true,
+    "result": "pass",
+    "steps": 10,
+    "return_seconds": 0.2,
+    "marker_error_m": 0.069,
+    "collisions": 0
+  },
+  {
+    "target": "blue cube",
+    "obstacles": true,
+    "result": "pass",
+    "steps": 8,
+    "return_seconds": 0.19,
+    "marker_error_m": 0.069,
+    "collisions": 0
+  },
+  {
+    "target": "blue cylinder",
+    "obstacles": true,
+    "result": "pass",
+    "steps": 8,
+    "return_seconds": 0.17,
+    "marker_error_m": 0.069,
+    "collisions": 0
+  },
+  {
+    "target": "yellow cone",
+    "obstacles": true,
+    "result": "pass",
+    "steps": 12,
+    "return_seconds": 0.27,
+    "marker_error_m": 0.069,
+    "collisions": 0
+  }
+]

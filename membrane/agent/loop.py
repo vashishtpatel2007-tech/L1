@@ -36,6 +36,7 @@ from .vlm import available as vlm_available
 from .vlm import build as build_vlm
 from .vlm import cost_usd
 from .runlog import RunLog
+from .navigation import ReturnNavigator
 
 ENGINE = "http://127.0.0.1:8080"
 RUNS = Path(__file__).resolve().parents[2] / "runs"
@@ -451,6 +452,7 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
     turn_streak = 0          # consecutive turns with no move in between
     steps_since_pickup_try = 0
     memory: dict[str, Any] = {}
+    navigator = ReturnNavigator()
     history: list[str] = []
     finished_reason = "max_steps"
 
@@ -459,6 +461,9 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
         frame_rel = log.save_frame(jpg)
         st = sanitize("state", _get("/state"))
         depth = sanitize("depth", _get("/depth")).get("distance")
+        action = (navigator.decide(jpg, st) if st["holding"]
+                  else navigator.prepare(jpg, st))
+        log.progress(navigator.phase if action else "Finding requested object", step)
 
         status = (
             f"step {step} of {max_steps} | heading {st['heading']} deg | "
@@ -490,7 +495,7 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
         # Nothing in view -> rotate without spending a model call. Capped so a
         # genuinely empty room cannot spin forever, and reset the moment
         # something appears.
-        if not mock and auto_scan and _nothing_to_decide(jpg, st["holding"]):
+        if action is None and not mock and auto_scan and _nothing_to_decide(jpg, st["holding"]):
             if blind_turns < MAX_BLIND_TURNS:
                 blind_turns += 1
                 result = sanitize("turn", _post("/turn", {"degrees": SWEEP_DEG}))
@@ -505,7 +510,7 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
         else:
             blind_turns = 0
 
-        if not mock and budget is not None:
+        if action is None and not mock and budget is not None:
             projected = started_at + spend["usd"]
             if projected >= budget:
                 budget_stop = True
@@ -515,7 +520,9 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
                 })
                 break
 
-        if mock:
+        if action is not None:
+            tool, args, thinking = action
+        elif mock:
             tool, args, thinking = _mock_decide(jpg, st, depth, memory)
             memory["last_tool"] = tool
         else:
@@ -523,6 +530,7 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
             hist = "\n".join(history[-14:])
             user_text = f"COMMAND: {command}\n{status}\n\nPREVIOUS STEPS:\n{hist or '(none)'}"
             assert_no_engine_identifiers(user_text, f"step {step} user text")
+            log.progress("Waiting for vision model", step)
             d = vlm.decide(SYSTEM, TOOLS, jpg, user_text)
             spend["calls"] += 1
             for k in ("input", "output", "cache_read"):
@@ -558,7 +566,7 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
         history.append(f"{step}: {tool}({json.dumps(args)}) -> {json.dumps(result)}")
 
         if tool == "drop" and result.get("success"):
-            finished_reason = "dropped"
+            finished_reason = "delivered" if result.get("in_zone") else "delivery_failed"
             break
         if result.get("state") == "Done":
             finished_reason = "engine_done"
@@ -578,6 +586,7 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
         "run_cost_usd": round(spend["usd"], 4),
         "cumulative_usd": total,
     })
+    log.progress("Delivery verified" if outcome.get("result") == "pass" else "Run ended without delivery", log.step)
     res = {"run_dir": str(run_dir), "steps": log.step,
            "reason": "budget_exceeded" if budget_stop else finished_reason,
            "engine_outcome": outcome, "cost_usd": round(spend["usd"], 4),
@@ -628,7 +637,7 @@ def main() -> None:
                     help="halt before any call that would push CUMULATIVE spend "
                          "past this. Brief targets $40 with an alert at $30.")
     ap.add_argument("--mock", action="store_true", help="free CV policy; no API calls")
-    ap.add_argument("--max-steps", type=int, default=32,
+    ap.add_argument("--max-steps", type=int, default=60,
                     help="brief: 25 soft target, 60 hard stop")
     ap.add_argument("--obstacles", action="store_true", help="stretch goal: blocked path")
     ap.add_argument("--run-id", default=None)
@@ -641,6 +650,10 @@ def main() -> None:
         raise SystemExit(f"LEAKAGE GATE FAILED -- run aborted: {e}")
     except RuntimeError as e:
         raise SystemExit(f"{e}\n\nproviders available: {vlm_available()}")
+    finally:
+        # An API/authentication failure must not strand the console behind a
+        # run lock until its TTL expires. Successful runs already release it.
+        _release()
 
     print(json.dumps(res, indent=2))
 
