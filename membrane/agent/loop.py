@@ -138,10 +138,12 @@ HOW TO ACT WELL
   ONLY thing you are looking for is the delivery platform.
 - The delivery platform is a low raised slab, brightly coloured with a pale rim,
   and it sits somewhere you have probably not looked yet.
-- REPORT THE PATCH WHENEVER YOU SEE IT, even while still fetching, by passing
-  `patch_at_column` with its pixel column. The robot remembers which way it lies
-  and will tell you the exact turn to face it again later. One report saves a
-  whole blind search after you have picked the item up.
+- REPORT THE PATCH WHENEVER YOU SEE IT, even while still fetching. Pass BOTH
+  `patch_at_column` (its pixel column) and `patch_at_row` (the row where its near
+  edge meets the floor). The column alone says which way it lies; the row fixes
+  how far, and without it the robot cannot tell you when you have arrived -- runs
+  have driven straight over the patch without ever releasing. With both, you are
+  told the remaining distance every step and exactly when to drop.
 - THE CARRY LEG IS WHERE RUNS ARE LOST, in one of two ways. Driving forward
   hoping the platform is that way, or sweeping straight past it after spotting
   it. If it is not in frame, sweep. If it IS in frame, immediately turn by the
@@ -176,6 +178,13 @@ REASON_FIELD = {
                        "horizontal pixel column, 0 to 639. Omit entirely when it is "
                        "not visible. Reporting it lets the robot remember which way "
                        "it lies, so it never has to be hunted for twice.",
+    },
+    "patch_at_row": {
+        "type": "number",
+        "description": "With patch_at_column, the image row where the NEAR EDGE of "
+                       "the patch meets the floor, 0 to 479. This fixes how far away "
+                       "it is, so the robot can tell you when you have arrived "
+                       "instead of letting you drive past it.",
     },
 }
 
@@ -474,6 +483,7 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
     # geometry, and stays usable from anywhere in the room. Without it the carry
     # leg is a blind search that costs up to nine calls every single time.
     patch_bearing: float | None = None
+    patch_xy: tuple[float, float] | None = None
     memory: dict[str, Any] = {}
     navigator = ReturnNavigator()
     history: list[str] = []
@@ -507,16 +517,32 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
             f"holding {str(st['holding']).lower()} | depth_ahead {depth} | "
             f"collisions {st['retry_count']} | consecutive turns {turn_streak}"
         )
-        if st["holding"] and patch_bearing is not None:
-            rel = ((patch_bearing - st["heading"] + 180.0) % 360.0) - 180.0
-            if abs(rel) <= 25:
-                status += ("\n\nYou are facing the direction you last saw the delivery "
-                           "patch. Drive forward; do not turn away.")
+        if st["holding"] and patch_xy is not None:
+            dx, dy = patch_xy[0] - st["x"], patch_xy[1] - st["y"]
+            gap = math.hypot(dx, dy)
+            want = ((math.degrees(math.atan2(-dy, dx)) - st["heading"] + 180.0) % 360.0) - 180.0
+            if gap <= 0.75:
+                status += (f"\n\nYOU HAVE ARRIVED. By your own report the patch is about "
+                           f"{gap:.2f} m away, which means you are on it. CALL DROP NOW. "
+                           f"Do not drive any further -- another move takes you past it.")
+            elif abs(want) > 20:
+                status += (f"\n\nThe patch you reported is about {gap:.1f} m away, "
+                           f"{want:+.0f} degrees off your heading. Turn to face it, "
+                           f"then drive.")
             else:
-                status += (f"\n\nYou previously reported the delivery patch at world "
-                           f"bearing {patch_bearing:.0f} degrees. You are now facing "
-                           f"{st['heading']:.0f}. Turn {rel:+.0f} degrees to face it "
-                           f"again, then drive. Do not sweep at random.")
+                status += (f"\n\nThe patch you reported is about {gap:.1f} m ahead and "
+                           f"lined up. Drive about {max(0.3, gap - 0.6):.1f} m, then look "
+                           f"again. Stop driving once it is under 0.8 m.")
+        elif st["holding"] and patch_bearing is not None:
+            rel = ((patch_bearing - st["heading"] + 180.0) % 360.0) - 180.0
+            if abs(rel) > 20:
+                status += (f"\n\nYou reported the patch at world bearing "
+                           f"{patch_bearing:.0f} degrees; you face {st['heading']:.0f}. "
+                           f"Turn {rel:+.0f} degrees, then drive. Do not sweep at random.")
+            else:
+                status += ("\n\nYou are facing the direction you last saw the patch. "
+                           "Drive, but report patch_at_row with patch_at_column so the "
+                           "robot can tell you when you have arrived.")
 
         if not st["holding"] and steps_since_pickup_try >= 3:
             status += ("\n\nYou have not attempted a grasp for several steps. If what "
@@ -611,9 +637,19 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
         steps_since_pickup_try = 0 if tool == "pickup" else steps_since_pickup_try + 1
 
         seen_u = args.pop("patch_at_column", None)
+        seen_v = args.pop("patch_at_row", None)
         if seen_u is not None:
             try:
-                patch_bearing = (st["heading"] + (float(seen_u) - 320.0) / 640.0 * 90.0) % 360.0
+                bearing = (st["heading"] + (float(seen_u) - 320.0) / 640.0 * 90.0) % 360.0
+                patch_bearing = bearing
+                if seen_v is not None:
+                    # Bearing plus range fixes a POSITION. Bearing alone told the
+                    # agent which way to drive but never when to stop, so it
+                    # sailed straight over the platform without releasing.
+                    rng = _range_from_row(int(float(seen_v)))
+                    if 0.2 < rng < 12.0:
+                        a = math.radians(bearing)
+                        patch_xy = (st["x"] + rng * math.cos(a), st["y"] - rng * math.sin(a))
             except (TypeError, ValueError):
                 pass
 
