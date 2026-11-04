@@ -52,6 +52,21 @@ class Outcome:
     notes: list = field(default_factory=list)
 
 
+def live_positions(sim: Sim) -> list[dict]:
+    """Where the objects are NOW, not where they spawned.
+
+    `scene.objects` holds spawn positions. Reading those to decide whether a
+    grasp is safe was wrong in exactly the cases that matter: on a crowded
+    platform the approach nudges objects, so the stale layout said the target
+    was nearest while the simulated one had a rival in front of it. This is
+    the validation harness reading the engine's own state directly, not
+    anything the API exposes.
+    """
+    return [{"label": o.label,
+             "pos": list(sim.data.xpos[sim.obj_bids[o.name]][:2])}
+            for o in sim.scene.objects]
+
+
 def face(sim: Sim, tx: float, ty: float) -> None:
     b = math.degrees(math.atan2(-(ty - sim.y), tx - sim.x))
     sim.turn(((b - sim.heading + 180) % 360) - 180)
@@ -100,13 +115,23 @@ def attempt(sim: Sim, label: str, out: Outcome) -> str:
     goal = planner.approach_pose(
         {"label": label, "pos": list(target.pos)}, others, standoff,
         prefer_from=(sim.x, sim.y))
+    if goal is None:
+        # No pose isolates this object from its neighbours. Refusing is correct:
+        # the brief counts fetching the wrong item as its own failure mode.
+        return "no_grasp"
     for wp in planner.plan((sim.x, sim.y), goal, others, skip=(label,)):
         drive(sim, wp[0], wp[1], 0.10, out, obstacles=others, skip=(label,))
 
     face(sim, *target.pos)
     for _ in range(5):
-        if sim.pickup()["success"]:
-            break
+        # Never grasp blind. The engine takes the nearest object in the cone,
+        # so check that this is the wanted one before committing: arrival
+        # tolerance and the nudge below can both bring a rival inside the cone,
+        # and a wrong grab is its own scored failure.
+        if planner.grasp_takes_target((sim.x, sim.y), sim.heading, label,
+                                      live_positions(sim)):
+            if sim.pickup()["success"]:
+                break
         sim.move(0.10)
         face(sim, *target.pos)
         out.steps += 2

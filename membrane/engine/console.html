@@ -38,6 +38,14 @@
   .log div{white-space:pre-wrap}
   .t-turn{color:#9ec5ff}.t-move{color:var(--good)}.t-pickup{color:var(--warn)}
   .t-drop{color:#c9a7ff}.t-err{color:var(--bad)}.t-sys{color:var(--muted)}
+  .term{height:250px;overflow:auto;background:#060911;border:1px solid var(--line);
+        border-radius:9px;padding:9px 10px;font:11.5px/1.55 ui-monospace,Menlo,monospace;
+        color:#b9c6dd}
+  .term .cmd{color:var(--accent);font-weight:700}
+  .term .ok{color:var(--good)} .term .no{color:var(--bad)}
+  .term .dim{color:var(--muted)}
+  .term .blk{margin:0 0 7px;padding:0 0 6px;border-bottom:1px dashed #1b2338;white-space:pre}
+  .term .blk:last-child{border-bottom:0}
   .chip{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;
         border:1px solid var(--line);background:var(--panel2);font-size:11.5px;font-weight:600}
 </style>
@@ -120,6 +128,19 @@
         <input type="checkbox" id="cbObs"> wall across the room
       </label>
     </div>
+    <div class="row" style="margin-top:8px">
+      <label class="row" style="gap:5px;color:var(--muted);font-size:12px">
+        playback
+        <select id="pace" style="width:150px">
+          <option value="0.5">0.5× — slow motion</option>
+          <option value="1" selected>1× — real time</option>
+          <option value="2">2×</option>
+          <option value="4">4×</option>
+          <option value="0">unpaced — as fast as it computes</option>
+        </select>
+      </label>
+      <span class="sub">1× plays the brief\u2019s speeds: 1 m/s forward, 90°/s turning.</span>
+    </div>
     <p class="sub" style="margin:9px 0 0">
       Randomising always keeps the rules: 4–6 objects, two sharing a colour, two
       sharing a shape, every height distinct, nothing overlapping.
@@ -143,6 +164,18 @@
   <section class="panel">
     <h2>Log &nbsp;·&nbsp; every step and the model's stated reason</h2>
     <div id="alog" class="log"><div class="t-sys">idle</div></div>
+  </section>
+
+  <!-- ─────────── physics readout ─────────── -->
+  <section class="panel">
+    <h2>Physics &nbsp;·&nbsp; what was integrated, and what the robot actually did</h2>
+    <div id="phys" class="term"><div class="blk dim">no motion yet</div></div>
+    <div class="stats">
+      <div class="stat"><div class="k">sim clock</div><div class="v" id="pClock">0.000 s</div></div>
+      <div class="stat"><div class="k">pose x,y</div><div class="v" id="pPose">—</div></div>
+      <div class="stat"><div class="k">heading</div><div class="v" id="pHead">—</div></div>
+      <div class="stat"><div class="k">playback</div><div class="v" id="pRate">1×</div></div>
+    </div>
   </section>
 </main>
 
@@ -284,9 +317,82 @@ async function refreshLayout(){
 }
 function refreshPov(){ $('#pov').src = '/look?t='+Date.now(); }
 
+
+/* ───────────── physics readout ─────────────
+   The engine hands over the integration record for the last command, so the
+   numbers here are the ones the integrator used rather than a re-derivation
+   that could quietly drift from them. "achieved" is measured from the robot's
+   own position after the move, which is why it differs from "requested" when
+   something was in the way -- that difference IS the thing worth watching.   */
+let physSeen = '';
+
+function physBlock(d, pose){
+  const u = d.unit, prec = u === 'm' ? 3 : 1;
+  const err  = Math.abs(d.achieved - d.requested);
+  const near = err <= (u === 'm' ? 0.006 : 0.6);
+  const mark = d.collided ? '<span class="no">blocked</span>'
+             : near       ? '<span class="ok">matches</span>'
+                          : '<span class="no">short by ' + err.toFixed(prec) + ' ' + u + '</span>';
+  return '<div class="blk">'
+    + '<span class="cmd">' + d.command + '</span>  requested '
+    + d.requested.toFixed(prec) + ' ' + u + '\n'
+    + '<span class="dim">  rate</span> ' + d.rate + ' ' + u + '/s'
+    + '<span class="dim">  ·  dt</span> ' + d.timestep + ' s'
+    + '<span class="dim">  →</span> ' + d.steps + ' steps\n'
+    + '<span class="dim">  sim time</span> ' + d.sim_seconds.toFixed(4) + ' s'
+    + '<span class="dim">  expected ' + d.expected_seconds.toFixed(4) + ' s</span>\n'
+    + '<span class="dim">  achieved</span> ' + d.achieved.toFixed(prec) + ' ' + u + '   ' + mark + '\n'
+    + '<span class="dim">  pose</span> ' + pose.x.toFixed(2) + ', ' + pose.y.toFixed(2)
+    + '<span class="dim">  heading</span> ' + pose.heading.toFixed(1) + '°'
+    + '<span class="dim">  clock</span> ' + d.sim_clock.toFixed(3) + ' s'
+    + '</div>';
+}
+
+async function refreshPhysics(){
+  const p = await jget('/admin/physics');
+  $('#pClock').textContent = p.sim_clock.toFixed(3)+' s';
+  $('#pPose').textContent  = p.pose.x.toFixed(2)+', '+p.pose.y.toFixed(2);
+  $('#pHead').textContent  = p.pose.heading.toFixed(1)+'°';
+  $('#pRate').textContent  = p.realtime ? p.realtime+'×' : 'unpaced';
+  const d = p.last;
+  if(!d || !d.command) return;
+  // One block per command. The clock is the only strictly increasing field, so
+  // it is what tells a fresh command from a repeat of the same numbers.
+  const key = d.command+'|'+d.sim_clock+'|'+d.achieved;
+  if(key === physSeen) return;
+  physSeen = key;
+  const box = $('#phys');
+  if(box.firstElementChild && box.firstElementChild.classList.contains('dim'))
+    box.innerHTML = '';
+  box.insertAdjacentHTML('beforeend', physBlock(d, p.pose));
+  while(box.children.length > 40) box.firstElementChild.remove();
+  box.scrollTop = box.scrollHeight;
+}
+
+/* While a /move or /turn is in flight the engine is sleeping between frames to
+   play the motion at the brief's speed, so the page must keep drawing or the
+   robot still appears to teleport. This ticker runs only during a command. */
+let liveTimer = null;
+function liveStart(){
+  if(liveTimer) return;
+  liveTimer = setInterval(() => {
+    refreshState().catch(()=>{});
+    refreshPov();
+  }, 110);
+}
+function liveStop(){ clearInterval(liveTimer); liveTimer = null; }
+
+$('#pace').onchange = async () => {
+  const v = parseFloat($('#pace').value);
+  await jpost('/admin/pace',{speed:v});
+  alog('playback '+(v ? v+'×' : 'unpaced'), 't-sys');
+  refreshPhysics().catch(()=>{});
+};
+
 /* ───────────── manual control ───────────── */
 async function act(tool,args){
   if(busy) return; busy = true;
+  if(tool==='move'||tool==='turn') liveStart();
   try{
     let res;
     if(tool==='turn') res = await jpost('/turn',args);
@@ -296,9 +402,11 @@ async function act(tool,args){
     steps++; $('#sSteps').textContent = steps;
     alog(String(steps).padStart(2,'0')+'  '+tool+(Object.keys(args||{}).length?JSON.stringify(args):'')
          +' → '+JSON.stringify(res), 't-'+tool);
+    liveStop();
     refreshPov(); await refreshState(); await refreshLayout();
+    await refreshPhysics().catch(()=>{});
   }catch(e){ alog('error: '+e,'t-err'); }
-  finally{ busy = false; }
+  finally{ liveStop(); busy = false; }
 }
 document.querySelectorAll('[data-turn]').forEach(b => b.onclick = () => act('turn',{degrees:+b.dataset.turn}));
 document.querySelectorAll('[data-move]').forEach(b => b.onclick = () => act('move',{distance:+b.dataset.move}));
@@ -347,7 +455,7 @@ async function pollAgent(runId){
   }
   refreshPov(); await refreshState(); await refreshLayout();
   if(!s.running){
-    clearInterval(agentTimer); agentTimer = null;
+    clearInterval(agentTimer); agentTimer = null; liveStop();
     $('#bAgent').disabled = false; $('#bAgentStop').disabled = true;
     const f = s.final||{}, eo = f.engine_outcome||{};
     alog('run ended: '+(f.outcome||'stopped')+' — engine says '+(eo.result||'incomplete')
@@ -368,6 +476,7 @@ $('#bAgent').onclick = async () => {
                   $('#bAgent').disabled=false; $('#bAgentStop').disabled=true; return; }
     alog('"'+command+'"  —  '+r.provider+' '+r.model,'t-sys');
     agentTimer = setInterval(() => pollAgent(r.run_id).catch(()=>{}), 1200);
+    liveStart();
   }catch(e){ alog('error: '+e,'t-err');
              $('#bAgent').disabled=false; $('#bAgentStop').disabled=true; }
 };
@@ -383,10 +492,16 @@ $('#bAgentStop').onclick = async () => { await jpost('/admin/agent_stop'); alog(
              || Object.entries(pv.available).find(([,v]) => v);
   if(ok) $('#prov').value = ok[0];
   refreshPov(); await refreshState(); await refreshLayout();
+  // The engine defaults to unpaced so the validation sweeps and the test suite
+  // are not slowed to real time. The console is for watching, so it asks for
+  // real time as soon as it loads.
+  await jpost('/admin/pace',{speed:parseFloat($('#pace').value)}).catch(()=>{});
+  await refreshPhysics().catch(()=>{});
   setInterval(async () => {
     if(busy) return;
     const locked = $('#lockChip').style.display !== 'none';
     await refreshState().catch(()=>{});
+    await refreshPhysics().catch(()=>{});
     if(locked || agentTimer){ refreshPov(); await refreshLayout().catch(()=>{}); }
   }, 1200);
 })();

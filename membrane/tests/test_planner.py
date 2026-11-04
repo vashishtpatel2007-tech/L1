@@ -84,12 +84,51 @@ class TestApproachPose:
         pose = planner.approach_pose(target, [target], 0.45, prefer_from=(0, 0))
         assert math.dist(pose, (1.0, -1.0)) == pytest.approx(0.45, abs=0.02)
 
-    def test_it_still_returns_a_pose_when_the_target_is_boxed_in(self):
+    def test_it_declines_when_a_rival_would_win_the_grasp(self):
+        """Packed in at 0.12 m, every approach puts a ring object nearer than
+        the target and inside the grasp cone, so the only honest answer is to
+        refuse: grasping would fetch a ring object, which the brief scores as
+        fail_wrong_object."""
         target = obj("t", 0, 0)
-        ring = [obj(f"r{i}", 0.75 * math.cos(a), 0.75 * math.sin(a))
-                for i, a in enumerate([j * math.pi / 4 for j in range(8)])]
-        pose = planner.approach_pose(target, [target] + ring, 0.40, prefer_from=(2, 2))
-        assert pose is not None and len(pose) == 2
+        ring = [obj(f"r{i}", 0.12 * math.cos(a), 0.12 * math.sin(a))
+                for i, a in enumerate([j * math.pi / 6 for j in range(12)])]
+        assert planner.approach_pose(
+            target, [target] + ring, 0.40, prefer_from=(2, 2)) is None
+
+    def test_a_sideways_rival_does_not_block_the_grasp(self):
+        """The grasp cone is 30 degrees. An object beside the robot is never
+        taken, however close it is, so it must not veto an approach."""
+        target = obj("t", 0, 0)
+        beside = obj("b", 0.40, 0.42)          # close to the +x standoff, far off-axis
+        pose = planner.approach_pose(target, [target, beside], 0.40,
+                                     prefer_from=(2.0, 0.0))
+        assert pose is not None
+
+    def test_grasp_takes_target_matches_the_engine_rule(self):
+        objs = [{"label": "want", "pos": [0.45, 0.0]},
+                {"label": "nearer", "pos": [0.25, 0.0]}]
+        # Facing +x from the origin, the nearer object is taken, not the wanted one.
+        assert not planner.grasp_takes_target((0.0, 0.0), 0.0, "want", objs)
+        assert planner.grasp_takes_target((0.0, 0.0), 0.0, "nearer", objs)
+        # Standing past the rival, it falls behind the cone and the target wins.
+        assert planner.grasp_takes_target((0.30, 0.0), 0.0, "want", objs)
+        # Nothing within the 0.5 m reach: there is no grasp to be right about.
+        assert not planner.grasp_takes_target((2.0, 0.0), 0.0, "want", objs)
+
+    def test_an_isolated_target_always_gets_a_reachable_pose(self):
+        target = obj("t", 0, 0)
+        far = obj("f", 2.5, 2.5)
+        pose = planner.approach_pose(target, [target, far], 0.40, prefer_from=(2, 2))
+        assert pose is not None
+        assert math.dist(pose, (0, 0)) <= planner.PICKUP_REACH
+
+    def test_a_barrier_is_not_treated_as_a_graspable_rival(self):
+        """A wall sits nearer than the target from almost any pose. Counting it
+        as a rival made the planner decline every object beside a wall."""
+        target = obj("t", 0, 0)
+        wall = planner.barrier_circles([(0.0, 0.9, 1.2, 0.06)])
+        assert planner.approach_pose(
+            target, [target] + wall, 0.40, prefer_from=(2, 0)) is not None
 
 
 class TestGrid:

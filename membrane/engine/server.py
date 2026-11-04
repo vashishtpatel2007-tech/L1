@@ -51,6 +51,9 @@ class SimWorker:
         self._jobs: queue.Queue = queue.Queue()
         self._ready = threading.Event()
         self.command = ""
+        #: Wall-clock playback speed, kept on the worker rather than the Sim so
+        #: it survives the scene rebuilds that replace the Sim object.
+        self.realtime = 0.0
         self.obstacles = False
         self.clutter = "none"
         self.seed: int | None = None
@@ -222,7 +225,7 @@ def _reset(w: SimWorker, body: ResetBody) -> dict[str, Any]:
             scene = default_scene(with_obstacles=obstacles)
             clutter = "none"
         w.sim.close()
-        w.sim = Sim(scene=scene, record_video=body.record)
+        w.sim = Sim(scene=scene, record_video=body.record, realtime=w.realtime)
         w.obstacles, w.clutter = obstacles, clutter
         w.seed = seed if body.randomise else None
         rebuilt = True
@@ -230,6 +233,7 @@ def _reset(w: SimWorker, body: ResetBody) -> dict[str, Any]:
         w.sim.record_video = body.record
         w.sim.reset_state()
 
+    w.sim.realtime = w.realtime
     w.command = body.command
     return {"ok": True, "obstacles": obstacles, "recording": body.record,
             "model_rebuilt": rebuilt, "randomised": body.randomise,
@@ -240,6 +244,52 @@ def _reset(w: SimWorker, body: ResetBody) -> dict[str, Any]:
 @app.post("/admin/reset")
 def admin_reset(body: ResetBody, _: None = Depends(guard)) -> dict[str, Any]:
     return worker.call(lambda w: _reset(w, body))
+
+
+class PaceBody(BaseModel):
+    #: 0 runs free (as fast as the CPU allows), 1 plays the brief's speeds in
+    #: real time, higher values fast-forward. Capped at 20 so a typo cannot
+    #: make the engine appear to hang.
+    speed: float = Field(default=1.0, ge=0.0, le=20.0)
+
+
+@app.post("/admin/pace")
+def admin_pace(body: PaceBody) -> dict[str, Any]:
+    """Set wall-clock playback speed.
+
+    Not guarded by the run lock: an operator watching an agent run must be able
+    to slow it down or speed it up without taking the robot away from it. It
+    changes only how long the engine sleeps between frames, never what the
+    physics computes, so it cannot affect a run's outcome.
+    """
+    def job(w: SimWorker) -> dict[str, Any]:
+        w.realtime = body.speed
+        w.sim.realtime = body.speed
+        return {"realtime": body.speed}
+    return worker.call(job)
+
+
+@app.get("/admin/physics")
+def admin_physics() -> dict[str, Any]:
+    """The integration record for the last /move or /turn.
+
+    Feeds the console's physics readout, so what the operator reads is what the
+    integrator used. Carries no object identities or positions -- only the
+    robot's own pose and the arithmetic of its last command -- so serving it
+    cannot leak what the brief requires the agent to see for itself.
+    """
+    def job(w: SimWorker) -> dict[str, Any]:
+        return {
+            "last": w.sim.last_physics,
+            "sim_clock": round(w.sim.sim_clock, 3),
+            "realtime": w.sim.realtime,
+            "pose": {"x": round(w.sim.x, 3), "y": round(w.sim.y, 3),
+                     "heading": round(w.sim.heading, 2)},
+            "state": w.sim.state,
+            "retries": w.sim.retries,
+            "holding": bool(w.sim.holding),
+        }
+    return worker.call(job)
 
 
 @app.get("/admin/outcome")

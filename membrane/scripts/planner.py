@@ -295,58 +295,191 @@ def plan(start, goal, obstacles, skip=(), depth: int = 4) -> list[tuple[float, f
     return [best] + plan(best, goal, obstacles, skip, depth - 1)
 
 
+PICKUP_REACH = 0.5          # the engine's grasp radius
+PICKUP_CONE = 30.0          # degrees either side of heading
+REACH_MARGIN = 0.05         # stay this far inside the reach limit
+RIVAL_MARGIN = 0.16         # how much nearer the target must be than any rival
+ARRIVAL_SLACK = 0.10        # how far from the planned pose the robot may stop
+CONE_SLACK = 8.0            # degrees of heading error to allow for
+
+
 def approach_pose(target: dict, obstacles: list[dict], standoff: float,
-                  prefer_from=None) -> tuple[float, float]:
-    """Where to stand so that `target` is the NEAREST object AND the drive
-    there does not pass through the target itself.
+                  prefer_from=None, strict: bool = True) -> tuple[float, float] | None:
+    """Where to stand so the grasp takes the RIGHT object, or None to decline.
 
-    Two failures this prevents:
+    `/pickup` attaches whatever is nearest inside the reach cone and does not
+    ask which object was wanted, so standing in the wrong place fetches the
+    wrong thing. Two requirements are therefore not negotiable:
 
-    `/pickup` attaches whatever is closest within reach, so standing on the
-    wrong side of a crowded pair silently fetches the wrong item.
+      1. the target is within the engine's 0.5 m reach, with margin
+      2. the target is NEARER than every other graspable object
 
-    And a standoff chosen on the FAR side of the target puts the target between
-    the robot and where it is going, so the approach drives straight into it.
-    Measured over 150 attempts: every single collision was an approach hitting
-    an object, 222 of them, with none against walls and none while carrying.
-    Ruling out poses the robot cannot reach in a straight line removes them.
+    and a third is merely strongly preferred:
+
+      3. the drive there does not pass through the target or anything else
+
+    Barriers matter for (3) but never for (2): a wall cannot be picked up, and
+    counting it as a rival made the function decline every object standing near
+    one -- the walled room fell to 70% delivery on 40 refusals.
+
+    Standoff shrinks until a pose satisfies the hard requirements, because
+    standing closer is always allowed and never costs correctness. When even
+    the closest ring leaves a rival nearer, the objects are genuinely
+    inseparable and None is returned: the brief scores fetching the wrong item
+    as its own failure, so declining is strictly better than guessing.
     """
     tx, ty = target["pos"]
     others = [o for o in obstacles if o["label"] != target["label"]]
+    # Only graspable objects can steal the grasp. Barrier proxies cannot.
+    rivals = [o for o in others if o.get("kind") != "barrier"]
     t_radius = _obj_radius(target)
-    best, best_margin = None, -1e9
+    floor = ROBOT_RADIUS + t_radius + 0.03          # closer than this is contact
 
-    for i in range(36):
-        ang = 2 * math.pi * i / 36
-        sx, sy = tx + standoff * math.cos(ang), ty + standoff * math.sin(ang)
-        if max(abs(sx), abs(sy)) > 3.6:
-            continue
+    rings = [standoff, standoff - 0.04, standoff - 0.08, max(floor + 0.02, 0.30)]
+    rings = [r for r in rings if r >= floor]
 
-        if prefer_from is not None:
-            # Would the drive clip the target on the way? Treat the target as
-            # an obstacle for this one test, which `plan` deliberately does not.
-            gap = _dist_point_segment((tx, ty), tuple(prefer_from), (sx, sy))
-            if gap < ROBOT_RADIUS + t_radius + 0.02:
+    def candidates(ring: float):
+        """Every pose on one ring that is in reach and out of contact."""
+        for i in range(72):
+            ang = 2 * math.pi * i / 72
+            sx, sy = tx + ring * math.cos(ang), ty + ring * math.sin(ang)
+            if max(abs(sx), abs(sy)) > 3.6:
                 continue
-            # ...or clip something else on the way.
-            if blockers(tuple(prefer_from), (sx, sy), others):
+            d_t = math.hypot(sx - tx, sy - ty)
+            if d_t > PICKUP_REACH - REACH_MARGIN or d_t < floor:
                 continue
+            yield (sx, sy), d_t, steal_margin(sx, sy, d_t)
 
-        d_other = min((math.hypot(sx - o["pos"][0], sy - o["pos"][1]) for o in others),
-                      default=99.0)
-        margin = d_other - standoff
-        if prefer_from is not None:
-            margin -= 0.04 * math.dist((sx, sy), prefer_from)
-        if margin > best_margin:
-            best, best_margin = (sx, sy), margin
+    def steal_margin(sx: float, sy: float, d_t: float) -> float:
+        """How much nearer the target is than the nearest object that could
+        steal the grasp from this pose.
 
-    if best is not None:
-        return best
+        `/pickup` takes the nearest object that is BOTH inside the 0.5 m reach
+        and inside the 30-degree heading cone, and the robot faces its target,
+        so a rival off to the side is harmless no matter how close it is.
+        Treating every direction as a threat made the planner decline perfectly
+        good fetches -- 13 of 150 on an open floor -- while still missing the
+        rivals that actually matter, which sit just inside the cone.
 
-    # Nothing clean: stand on the side the robot is already on, which at worst
-    # stops short rather than driving through the object.
+        A negative result means a rival wins and the grasp takes the wrong
+        object.
+        """
+        tdx, tdy = (tx - sx) / d_t, (ty - sy) / d_t
+        worst = 99.0
+        for o in rivals:
+            ox, oy = o["pos"]
+            vx, vy = ox - sx, oy - sy
+            d_r = math.hypot(vx, vy)
+            if d_r < 1e-9 or d_r > PICKUP_REACH:
+                continue                      # out of reach: cannot be taken
+            cosang = (vx * tdx + vy * tdy) / d_r
+            ang = math.degrees(math.acos(max(-1.0, min(1.0, cosang))))
+            if ang > PICKUP_CONE + CONE_SLACK:
+                continue                      # outside the cone: harmless
+            worst = min(worst, d_r - d_t)
+        return worst
+
+    def bias(pose: tuple[float, float]) -> float:
+        if prefer_from is None:
+            return 0.0
+        return 0.04 * math.dist(pose, prefer_from)
+
+    def path_is_clear(pose: tuple[float, float], allow_target_brush: bool) -> bool:
+        if prefer_from is None:
+            return True
+        if blockers(tuple(prefer_from), pose, others):
+            return False
+        if allow_target_brush:
+            return True
+        gap = _dist_point_segment((tx, ty), tuple(prefer_from), pose)
+        return gap >= ROBOT_RADIUS + t_radius + 0.02
+
+    # Pass 1 and 2: insist on the rival safety band. The second pass tolerates
+    # brushing the target on the way in -- nudging the thing you are reaching
+    # for is recoverable -- but never driving through anything else. Dropping
+    # that second test too sent open-floor collisions from 8 to 46.
+    # Rings are tried outermost first and the first that works wins. Scoring
+    # every ring together instead looks tidier and is worse: a tighter ring
+    # always shows a larger rival margin, so the robot ends up hugging its
+    # target and open-floor collisions went from 9 to 61.
+    for brush in (False, True):
+        for ring in rings:
+            best, best_score = None, -1e9
+            for pose, d_t, d_o in candidates(ring):
+                if d_o < d_t + RIVAL_MARGIN:
+                    continue
+                if not path_is_clear(pose, brush):
+                    continue
+                score = (d_o - d_t) - bias(pose)
+                if score > best_score:
+                    best, best_score = pose, score
+            if best is not None:
+                return best
+
+    # Pass 3: the safety band is a comfort buffer, not the engine's rule. Ask
+    # the question the engine actually asks -- is the target the nearest thing
+    # at all? -- and accept any pose where it is. Refusing these cost 13 of 150
+    # open-floor fetches that the grasp would have got right.
+    # The margin still has to cover the drive: the robot stops within
+    # ARRIVAL_SLACK of the planned pose, and a margin thinner than that can be
+    # spent entirely on arrival error, which is how objects standing on the
+    # platform were still being mixed up.
+    for clear_path_only in (True, False):
+        for ring in rings:
+            best, best_score = None, -1e9
+            for pose, d_t, d_o in candidates(ring):
+                if d_o - d_t <= ARRIVAL_SLACK:
+                    continue                  # a rival could win the grasp
+                if clear_path_only and not path_is_clear(pose, True):
+                    continue
+                score = (d_o - d_t) - bias(pose)
+                if score > best_score:
+                    best, best_score = pose, score
+            if best is not None:
+                return best
+
+    # Every reachable pose leaves another object nearer: the target cannot be
+    # isolated, and any grasp from here would be fail_wrong_object.
+    if strict:
+        return None
+
     if prefer_from is not None:
         dx, dy = prefer_from[0] - tx, prefer_from[1] - ty
         n = math.hypot(dx, dy) or 1.0
-        return (tx + dx / n * standoff, ty + dy / n * standoff)
-    return (tx + standoff, ty)
+    else:
+        dx, dy, n = 1.0, 0.0, 1.0
+    r = min(standoff, PICKUP_REACH - REACH_MARGIN)
+    return (tx + dx / n * r, ty + dy / n * r)
+
+
+
+def grasp_takes_target(robot: tuple[float, float], heading_deg: float,
+                       target_label: str, objects: list[dict]) -> bool:
+    """Would `/pickup` right now attach the object we actually want?
+
+    Reimplements the engine's rule exactly -- nearest object that is inside the
+    reach AND inside the heading cone -- against live positions, so it can be
+    asked immediately before grasping. Planning a safe pose is not enough on
+    its own: the robot stops within a tolerance of that pose, and a failed
+    grasp is retried after nudging forward, either of which can quietly bring a
+    rival inside the cone.
+
+    Returns False when nothing is graspable at all, since there is then no
+    grasp to be right about.
+    """
+    rx, ry = robot
+    h = math.radians(heading_deg)
+    fx, fy = math.cos(h), -math.sin(h)        # engine's clockwise-positive heading
+    best, best_d = None, 1e9
+    for o in objects:
+        ox, oy = o["pos"]
+        vx, vy = ox - rx, oy - ry
+        d = math.hypot(vx, vy)
+        if d > PICKUP_REACH or d < 1e-6:
+            continue
+        cosang = (vx * fx + vy * fy) / d
+        if math.degrees(math.acos(max(-1.0, min(1.0, cosang)))) > PICKUP_CONE:
+            continue
+        if d < best_d:
+            best, best_d = o["label"], d
+    return best == target_label

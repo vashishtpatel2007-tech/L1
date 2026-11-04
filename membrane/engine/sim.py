@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import math
+import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -53,6 +54,19 @@ CARRY_FWD = 0.60
 CARRY_CLEAR = 0.06        # keep the carried object's base this far above the floor
 VIDEO_EVERY = 8           # capture a POV video frame every N physics steps (~30 fps)
 
+# Wall-clock pacing. The engine always advances simulated time correctly -- a
+# 1 m move is integrated as exactly 1 m / 1 m/s = 1 s of simulated time -- but
+# by default it runs those steps as fast as the CPU manages, so on screen the
+# robot teleports. `Sim.realtime` ties simulated time to real time: 1.0 plays
+# the motion at the speed the brief specifies, 2.0 plays it at double speed,
+# and 0.0 is free-running, which is what the validation sweeps and the test
+# suite want (pacing 450 fetches in real time would take hours).
+#
+# Pacing is applied once per rendered frame rather than once per physics step:
+# a 2 ms step cannot be slept on accurately, and the frame boundary is exactly
+# where the visible motion changes anyway.
+REALTIME_DEFAULT = 0.0
+
 
 @dataclass
 class RunOutcome:
@@ -65,6 +79,7 @@ class RunOutcome:
 class Sim:
     scene: Scene = field(default_factory=default_scene)
     record_video: bool = True
+    realtime: float = REALTIME_DEFAULT
 
     def __post_init__(self) -> None:
         self.model = mujoco.MjModel.from_xml_string(build_xml(self.scene))
@@ -121,6 +136,10 @@ class Sim:
         self.video_frames: list[np.ndarray] = []
         self.outcome = RunOutcome()
         self._step_counter = 0
+        self.sim_clock = 0.0              # simulated seconds, advances only on steps
+        self._pace_sim0 = 0.0
+        self._pace_wall0 = time.perf_counter()
+        self.last_physics: dict[str, Any] = {}
 
         x, y, h = self.scene.robot_start
         self.x, self.y, self.heading = x, y, h
@@ -159,14 +178,63 @@ class Sim:
         self._hold_object_in_place()
         mujoco.mj_step(self.model, self.data)
         self._step_counter += 1
+        self.sim_clock += float(self.model.opt.timestep)
         if self.record_video and self._step_counter % VIDEO_EVERY == 0:
             self.video_frames.append(self._render())
+        if self.realtime > 0.0 and self._step_counter % VIDEO_EVERY == 0:
+            self._pace()
+
+    def _record_physics(self, command: str, *, requested: float, achieved: float,
+                        unit: str, rate: float, n_steps: int, elapsed: float,
+                        collided: bool) -> None:
+        """Keep the integration record for the last command.
+
+        This is what the console's physics readout displays, so the numbers on
+        screen are the ones the integrator actually used rather than a
+        re-derivation that could drift from them. It carries no object
+        identities, positions or labels -- nothing the brief withholds from the
+        agent -- so it is safe to serve from an endpoint.
+        """
+        self.last_physics = {
+            "command": command,
+            "requested": round(requested, 4),
+            "achieved": round(achieved, 4),
+            "unit": unit,
+            "rate": rate,
+            "timestep": round(float(self.model.opt.timestep), 6),
+            "steps": n_steps,
+            "sim_seconds": round(elapsed, 4),
+            "expected_seconds": round(abs(requested) / rate, 4),
+            "collided": collided,
+            "sim_clock": round(self.sim_clock, 3),
+            "realtime": self.realtime,
+        }
+
+    def _pace_reset(self) -> None:
+        """Anchor wall-clock pacing to now.
+
+        Called at the start of each command so that time spent thinking between
+        commands -- a model call takes seconds -- is not then "caught up" by
+        replaying the next move at a sprint.
+        """
+        self._pace_sim0 = self.sim_clock
+        self._pace_wall0 = time.perf_counter()
+
+    def _pace(self) -> None:
+        """Hold the frame until real time has caught up with simulated time."""
+        target = (self.sim_clock - self._pace_sim0) / self.realtime
+        behind = target - (time.perf_counter() - self._pace_wall0)
+        if behind > 0:
+            time.sleep(behind)
 
     def _settle(self, n: int) -> None:
+        # Settling is not motion the operator is watching, so it is never
+        # paced: sleeping through it would add a visible stall after every drop.
         was, self.record_video = self.record_video, False
+        was_rt, self.realtime = self.realtime, 0.0
         for _ in range(n):
             self._physics_step()
-        self.record_video = was
+        self.record_video, self.realtime = was, was_rt
 
     STATIC_MARGIN = 0.005
 
@@ -248,6 +316,8 @@ class Sim:
 
         n_steps = max(1, int(abs(distance) / (MOVE_SPEED * self.model.opt.timestep)))
         step_len = distance / n_steps
+        self._pace_reset()
+        clock_at_start = self.sim_clock
         start = np.array([self.x, self.y])
         heading_at_start = self._forward()[:2]
         collided = False
@@ -299,6 +369,10 @@ class Sim:
                 self.state = "Done"
                 self.outcome.result = "fail_collision"
 
+        self._record_physics("move", requested=distance, achieved=travelled,
+                             unit="m", rate=MOVE_SPEED, n_steps=n_steps,
+                             elapsed=self.sim_clock - clock_at_start,
+                             collided=collided)
         return {
             "collided": collided,
             "distance_travelled": round(travelled, 3),
@@ -313,11 +387,18 @@ class Sim:
             self.state = "Locate"
         n_steps = max(1, int(abs(degrees) / (TURN_SPEED * self.model.opt.timestep)))
         inc = degrees / n_steps
+        self._pace_reset()
+        clock_at_start = self.sim_clock
+        h0 = self.heading
         for _ in range(n_steps):
             self.heading = (self.heading + inc) % 360.0
             self._physics_step()
         if self.state == "Blocked":
             self.state = "Carry" if self.holding else "GoToObject"
+        self._record_physics(
+            "turn", requested=degrees, achieved=((self.heading - h0 + 540) % 360) - 180,
+            unit="deg", rate=TURN_SPEED, n_steps=n_steps,
+            elapsed=self.sim_clock - clock_at_start, collided=False)
         return {"heading": round(self.heading, 2), "state": self.state}
 
     def pickup(self) -> dict[str, Any]:
@@ -401,6 +482,10 @@ class Sim:
         self.video_frames = []
         self.outcome = RunOutcome()
         self._step_counter = 0
+        self.sim_clock = 0.0              # simulated seconds, advances only on steps
+        self._pace_sim0 = 0.0
+        self._pace_wall0 = time.perf_counter()
+        self.last_physics: dict[str, Any] = {}
         x, y, h = self.scene.robot_start
         self.x, self.y, self.heading = x, y, h
         self._apply_pose()
