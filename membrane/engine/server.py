@@ -24,7 +24,10 @@ Admin routes are prefixed /admin and are NEVER called by the agent.
 from __future__ import annotations
 
 import io
+import json
 import queue
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -307,6 +310,112 @@ def console() -> Response:
     and rehearsal; the agent does not use it."""
     html = (Path(__file__).parent / "console.html").read_text()
     return Response(content=html, media_type="text/html")
+
+
+# ---- launching the real agent -------------------------------------------
+# The brief requires three processes: engine, agent, Claude API. The engine must
+# never call the model itself, so this does not run the agent in-process -- it
+# SPAWNS `python -m agent.loop` exactly as a terminal would, and reports progress
+# by reading the run's JSONL. The agent claims the run lock on its own.
+_agent_proc: dict[str, Any] = {"proc": None, "run_id": None, "started": 0.0}
+
+
+class AgentRunBody(BaseModel):
+    command: str
+    provider: str = "gemini"
+    model: str = ""
+    max_steps: int = 20
+    rpm: int = 12
+    obstacles: bool = False
+
+
+@app.post("/admin/agent_run")
+def admin_agent_run(body: AgentRunBody) -> dict[str, Any]:
+    proc = _agent_proc["proc"]
+    if proc is not None and proc.poll() is None:
+        raise HTTPException(409, f"an agent run is already in progress ({_agent_proc['run_id']})")
+    if lock.active():
+        raise HTTPException(409, f"engine is locked by {lock.owner!r}")
+    if not body.command.strip():
+        raise HTTPException(400, "command is empty")
+
+    run_id = f"ui{int(time.time()) % 100000}"
+    root = Path(__file__).resolve().parents[1]
+    cmd = [sys.executable, "-m", "agent.loop",
+           "--command", body.command.strip(),
+           "--provider", body.provider,
+           "--max-steps", str(body.max_steps),
+           "--rpm", str(body.rpm),
+           "--run-id", run_id]
+    if body.model.strip():
+        cmd += ["--model", body.model.strip()]
+    if body.obstacles:
+        cmd.append("--obstacles")
+
+    _agent_proc.update(
+        proc=subprocess.Popen(cmd, cwd=str(root), stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True),
+        run_id=run_id, started=time.time())
+    return {"started": True, "run_id": run_id, "command": body.command.strip(),
+            "provider": body.provider, "model": body.model or "(provider default)"}
+
+
+@app.get("/admin/agent_status")
+def admin_agent_status(run_id: str = "") -> dict[str, Any]:
+    rid = run_id or _agent_proc["run_id"]
+    if not rid:
+        return {"run_id": None, "running": False, "steps": []}
+    proc = _agent_proc["proc"]
+    running = proc is not None and proc.poll() is None and rid == _agent_proc["run_id"]
+
+    log = Path(__file__).resolve().parents[2] / "runs" / f"run_{rid}" / "log.jsonl"
+    steps, final = [], None
+    if log.exists():
+        for line in log.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if "step" in d:
+                steps.append({"step": d["step"], "tool": d["tool"],
+                              "args": {k: v for k, v in (d.get("args") or {}).items()},
+                              "result": d.get("result"),
+                              "reason": d.get("claude_reasoning", "")})
+            elif d.get("event") == "run_end":
+                final = d
+
+    tail = ""
+    if not running and proc is not None and proc.stdout is not None and proc.poll() is not None:
+        try:
+            tail = (proc.stdout.read() or "")[-700:]
+            proc.stdout.close()
+        except Exception:
+            pass
+    return {"run_id": rid, "running": running, "steps": steps, "final": final,
+            "stdout_tail": tail,
+            "elapsed_s": round(time.time() - _agent_proc["started"], 1)}
+
+
+@app.post("/admin/agent_stop")
+def admin_agent_stop() -> dict[str, Any]:
+    proc = _agent_proc["proc"]
+    if proc is None or proc.poll() is not None:
+        return {"stopped": False, "reason": "no run in progress"}
+    proc.terminate()
+    lock.release(lock.token)       # the agent cannot release it once killed
+    return {"stopped": True, "run_id": _agent_proc["run_id"]}
+
+
+@app.get("/admin/providers")
+def admin_providers() -> dict[str, Any]:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from agent.env import load as load_env
+    from agent.vlm import DEFAULT_MODEL, available
+
+    load_env()
+    return {"available": available(), "defaults": DEFAULT_MODEL}
 
 
 @app.post("/admin/claim")

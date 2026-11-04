@@ -305,9 +305,14 @@ class FallbackVLM:
 
 
 PROVIDERS = {"anthropic": AnthropicVLM, "gemini": GeminiVLM, "groq": GroqVLM}
-DEFAULT_MODEL = {"anthropic": "claude-sonnet-5-5",
-                 "gemini": "gemini-2.5-flash",
-                 "groq": "meta-llama/llama-4-scout-17b-16e-instruct"}
+#: Gemini's default is a FALLBACK CHAIN, not one model. Free tiers hand out
+#: per-model 429s and the newer previews return 503 under load, so a single
+#: default leaves the console dead on arrival for no reason to do with the agent.
+DEFAULT_MODEL = {
+    "anthropic": "claude-sonnet-5-5",
+    "gemini": "gemini-flash-lite-latest,gemini-3.6-flash,gemini-2.5-flash-lite",
+    "groq": "meta-llama/llama-4-scout-17b-16e-instruct",
+}
 
 
 def build(provider: str, model: str | None = None, max_tokens: int = 700,

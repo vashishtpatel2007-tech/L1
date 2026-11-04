@@ -93,8 +93,33 @@
     </div>
   </section>
 
+  <section class="panel" style="grid-column:1/-1">
+    <h2>Run the AI agent &nbsp;&middot;&nbsp; this is the real thing</h2>
+    <div class="row">
+      <input id="cmd" class="input" style="flex:1;min-width:260px"
+             value="Bring the round red thing"
+             placeholder="Type a plain-language command, e.g. Bring the tallest object">
+      <select id="prov"></select>
+      <input id="mdl" placeholder="model (optional)" style="width:190px">
+      <label class="row" style="gap:5px;color:var(--muted);font-size:12px">
+        steps <input id="msteps" type="number" value="20" min="4" max="60" style="width:62px">
+      </label>
+      <button id="bAgent" class="go">run agent</button>
+      <button id="bAgentStop" disabled>stop</button>
+    </div>
+    <p class="sub" style="margin:9px 0 10px">
+      Spawns the agent as its own process, as the brief requires. It sees only the
+      camera frame &mdash; no object names, positions or colours. Its stated reason
+      for each step appears below as it goes.
+    </p>
+    <div id="alog" style="height:230px;overflow:auto;background:var(--panel2);
+         border-radius:9px;padding:9px;font:12px/1.6 ui-monospace,Menlo,monospace">
+      <div class="t-sys">idle</div>
+    </div>
+  </section>
+
   <section class="panel">
-    <h2>Scripted fetch</h2>
+    <h2>Scripted fetch &nbsp;&middot;&nbsp; optimal baseline, NOT the AI</h2>
     <div class="row">
       <select id="target"></select>
       <button id="bRun" class="go">run fetch</button>
@@ -135,6 +160,9 @@ function setLocked(info){
   chip.style.color = 'var(--warn)';
   document.querySelectorAll('[data-turn],[data-move],#bPickup,#bDrop,#bReset,#bRun')
           .forEach(b => b.disabled = on);
+  // The agent panel stays live: the agent process is what holds the lock.
+  if(on && !agentTimer) $('#bAgent').disabled = true;
+  if(!on && !agentTimer) $('#bAgent').disabled = false;
 }
 
 async function refreshState(){
@@ -209,9 +237,78 @@ $('#bRun').onclick = async () => {
 };
 $('#bStop').onclick = () => { running = false; log('stopped', 't-sys'); };
 
+// ---------------- the AI agent ----------------
+let agentTimer = null, lastStep = 0;
+
+function alog(msg, cls){
+  const d = document.createElement('div');
+  d.className = cls || 't-sys'; d.textContent = msg;
+  $('#alog').appendChild(d); $('#alog').scrollTop = $('#alog').scrollHeight;
+}
+
+async function pollAgent(runId){
+  const s = await jget('/admin/agent_status?run_id=' + encodeURIComponent(runId));
+  for(const st of s.steps){
+    if(st.step <= lastStep) continue;
+    lastStep = st.step;
+    const a = Object.keys(st.args || {}).length ? JSON.stringify(st.args) : '';
+    alog(String(st.step).padStart(2,'0') + '  ' + st.tool + a, 't-' + st.tool);
+    if(st.reason) alog('     ' + st.reason);
+    const r = st.result || {};
+    if(r.collided) alog('     ! collision', 't-err');
+    if(st.tool === 'pickup')
+      alog(r.success ? '     grasped' : '     nothing in reach', r.success ? 't-move' : 't-err');
+    if(st.tool === 'drop')
+      alog(r.in_zone ? '     delivered to the platform' : '     released off the platform',
+           r.in_zone ? 't-move' : 't-err');
+  }
+  refreshImages(); await refreshState();
+
+  if(!s.running){
+    clearInterval(agentTimer); agentTimer = null;
+    $('#bAgent').disabled = false; $('#bAgentStop').disabled = true;
+    const f = s.final || {}; const eo = f.engine_outcome || {};
+    alog('run ended: ' + (f.outcome || 'stopped') + ' - engine says '
+         + (eo.result || 'incomplete')
+         + (f.run_cost_usd != null ? '  ($' + f.run_cost_usd + ')' : ''));
+    if(!s.steps.length && s.stdout_tail) alog(s.stdout_tail, 't-err');
+  }
+}
+
+$('#bAgent').onclick = async () => {
+  const command = $('#cmd').value.trim();
+  if(!command) return;
+  $('#alog').innerHTML = ''; lastStep = 0;
+  $('#bAgent').disabled = true; $('#bAgentStop').disabled = false;
+  try{
+    const r = await jpost('/admin/agent_run', {
+      command: command, provider: $('#prov').value, model: $('#mdl').value.trim(),
+      max_steps: +$('#msteps').value, rpm: 12, obstacles: $('#cbObs').checked});
+    if(r.detail){
+      alog('could not start: ' + r.detail, 't-err');
+      $('#bAgent').disabled = false; $('#bAgentStop').disabled = true; return;
+    }
+    alog('"' + command + '"  -  ' + r.provider + ' ' + r.model);
+    agentTimer = setInterval(() => pollAgent(r.run_id).catch(() => {}), 1200);
+  }catch(e){
+    alog('error: ' + e, 't-err');
+    $('#bAgent').disabled = false; $('#bAgentStop').disabled = true;
+  }
+};
+
+$('#bAgentStop').onclick = async () => {
+  await jpost('/admin/agent_stop'); alog('stop requested');
+};
+
 (async function init(){
   const t = await jget('/admin/targets');
   $('#target').innerHTML = t.targets.map(x => `<option>${x}</option>`).join('');
+  const pv = await jget('/admin/providers');
+  $('#prov').innerHTML = Object.entries(pv.available)
+      .map(([k,v]) => '<option value="' + k + '"' + (v ? '' : ' disabled') + '>'
+           + k + (v ? '' : ' (no key)') + '</option>').join('');
+  const firstOk = Object.entries(pv.available).find(([,v]) => v);
+  if(firstOk) $('#prov').value = firstOk[0];
   refreshImages(); refreshState();
   // While an agent holds the lock the console is a spectator, so the views must
   // refresh on their own -- otherwise the run is invisible and there is nothing
