@@ -8,37 +8,38 @@
         --muted:#8e9bb3;--accent:#4f8cff;--good:#22d3a7;--warn:#f0b429;--bad:#f2565b}
   *{box-sizing:border-box} html,body{margin:0;height:100%}
   body{background:var(--bg);color:var(--txt);font:14px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Inter,sans-serif}
-  header{display:flex;align-items:center;gap:14px;padding:10px 18px;border-bottom:1px solid var(--line);
-         background:rgba(10,14,24,.9);position:sticky;top:0;z-index:5;flex-wrap:wrap}
+  header{display:flex;align-items:center;gap:12px;padding:9px 16px;border-bottom:1px solid var(--line);
+         background:rgba(10,14,24,.94);position:sticky;top:0;z-index:5;flex-wrap:wrap}
   .dot{width:9px;height:9px;border-radius:50%;background:var(--good)}
-  h1{font-size:15px;margin:0;font-weight:700;letter-spacing:.2px}
-  .sub{color:var(--muted);font-size:12px}
-  main{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:14px;max-width:1500px;margin:0 auto}
-  @media(max-width:1000px){main{grid-template-columns:1fr}}
-  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px}
-  .panel h2{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--muted);margin:0 0 9px}
-  img{width:100%;border-radius:9px;display:block;background:#000}
+  h1{font-size:14px;margin:0;font-weight:700}
+  .sub{color:var(--muted);font-size:11px}
+  main{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:12px;max-width:1700px;margin:0 auto}
+  @media(max-width:1050px){main{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px}
+  .wide{grid-column:1/-1}
+  .panel h2{font-size:10.5px;text-transform:uppercase;letter-spacing:.9px;color:var(--muted);margin:0 0 8px}
+  img,canvas{width:100%;border-radius:9px;display:block;background:#000}
   .row{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
   button{background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:9px;
-         padding:8px 13px;font:inherit;font-weight:600;cursor:pointer}
+         padding:7px 12px;font:inherit;font-weight:600;cursor:pointer}
   button:hover:not(:disabled){border-color:var(--accent);color:#fff}
   button:disabled{opacity:.4;cursor:not-allowed}
   button.go{background:var(--accent);color:#06142e;border-color:transparent}
   button.warn{background:var(--warn);color:#2a1c00;border-color:transparent}
   select,input{background:var(--panel2);color:var(--txt);border:1px solid var(--line);
-               border-radius:9px;padding:8px 10px;font:inherit}
-  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:9px}
-  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-  .stat{background:var(--panel2);border-radius:9px;padding:8px 10px}
-  .stat .k{font-size:10px;text-transform:uppercase;letter-spacing:.7px;color:var(--muted)}
-  .stat .v{font-size:17px;font-weight:700;font-family:ui-monospace,Menlo,monospace}
-  #log{height:190px;overflow:auto;background:var(--panel2);border-radius:9px;padding:8px;
-       font:12px/1.65 ui-monospace,Menlo,monospace}
-  #log div{white-space:pre-wrap}
+               border-radius:9px;padding:7px 10px;font:inherit}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:8px}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-top:9px}
+  .stat{background:var(--panel2);border-radius:9px;padding:7px 9px}
+  .stat .k{font-size:9.5px;text-transform:uppercase;letter-spacing:.7px;color:var(--muted)}
+  .stat .v{font-size:16px;font-weight:700;font-family:ui-monospace,Menlo,monospace}
+  .log{height:250px;overflow:auto;background:var(--panel2);border-radius:9px;padding:8px;
+       font:12px/1.6 ui-monospace,Menlo,monospace}
+  .log div{white-space:pre-wrap}
   .t-turn{color:#9ec5ff}.t-move{color:var(--good)}.t-pickup{color:var(--warn)}
   .t-drop{color:#c9a7ff}.t-err{color:var(--bad)}.t-sys{color:var(--muted)}
   .chip{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;
-        border:1px solid var(--line);background:var(--panel2);font-size:12px;font-weight:600}
+        border:1px solid var(--line);background:var(--panel2);font-size:11.5px;font-weight:600}
 </style>
 </head>
 <body>
@@ -49,32 +50,83 @@
   <span class="chip" id="lockChip" style="margin-left:auto;display:none">—</span>
   <span class="chip" id="stateChip">—</span>
   <span class="chip" id="holdChip">—</span>
+  <span class="chip" id="seedChip">—</span>
 </header>
 
 <main>
-  <section class="panel">
-    <h2>Robot camera &nbsp;·&nbsp; GET /look &nbsp;·&nbsp; 640×480, 90° FOV</h2>
-    <img id="pov" alt="Robot point of view">
-    <div class="stats" style="margin-top:10px">
-      <div class="stat"><div class="k">heading</div><div class="v" id="sHead">—</div></div>
-      <div class="stat"><div class="k">depth ahead</div><div class="v" id="sDepth">—</div></div>
-      <div class="stat"><div class="k">collisions</div><div class="v" id="sRetry">—</div></div>
+  <!-- ─────────── the command bar, first thing on the page ─────────── -->
+  <section class="panel wide">
+    <h2>Run the AI agent &nbsp;·&nbsp; it sees only the camera</h2>
+    <div class="row">
+      <input id="cmd" style="flex:1;min-width:250px" value="Bring the tallest object"
+             placeholder="Type what to fetch, e.g. Bring the small red box">
+      <select id="prov"></select>
+      <input id="mdl" placeholder="model (optional)" style="width:175px">
+      <label class="row" style="gap:5px;color:var(--muted);font-size:12px">
+        steps <input id="msteps" type="number" value="32" min="4" max="60" style="width:58px">
+      </label>
+      <button id="bAgent" class="go">run agent</button>
+      <button id="bAgentStop" disabled>stop</button>
     </div>
   </section>
 
+  <!-- ─────────── camera ─────────── -->
   <section class="panel">
-    <h2>Overhead &nbsp;·&nbsp; operator view only, never sent to the model</h2>
-    <img id="top" alt="Overhead view of the room">
-    <div class="stats" style="margin-top:10px">
-      <div class="stat"><div class="k">x</div><div class="v" id="sX">—</div></div>
-      <div class="stat"><div class="k">y</div><div class="v" id="sY">—</div></div>
+    <h2>Robot camera &nbsp;·&nbsp; GET /look &nbsp;·&nbsp; 640×480, 90° FOV</h2>
+    <img id="pov" alt="Robot point of view">
+    <div class="stats">
+      <div class="stat"><div class="k">heading</div><div class="v" id="sHead">—</div></div>
+      <div class="stat"><div class="k">depth</div><div class="v" id="sDepth">—</div></div>
+      <div class="stat"><div class="k">collisions</div><div class="v" id="sRetry">—</div></div>
       <div class="stat"><div class="k">steps</div><div class="v" id="sSteps">0</div></div>
     </div>
   </section>
 
+  <!-- ─────────── map + trajectory ─────────── -->
   <section class="panel">
-    <h2>Manual control</h2>
-    <div class="grid">
+    <h2>Scene &amp; trajectory &nbsp;·&nbsp; operator view, never sent to the model</h2>
+    <canvas id="map" width="760" height="760"></canvas>
+    <div class="stats">
+      <div class="stat"><div class="k">path</div><div class="v" id="sPath">0.00 m</div></div>
+      <div class="stat"><div class="k">net</div><div class="v" id="sNet">0.00 m</div></div>
+      <div class="stat"><div class="k">wander</div><div class="v" id="sWander">—</div></div>
+      <div class="stat"><div class="k">objects</div><div class="v" id="sObj">—</div></div>
+    </div>
+  </section>
+
+  <!-- ─────────── scene setup ─────────── -->
+  <section class="panel">
+    <h2>Scene</h2>
+    <div class="row">
+      <button id="bRand" class="warn">randomise everything</button>
+      <button id="bReset">reset this scene</button>
+      <button id="bFixed">fixed demo scene</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <label class="row" style="gap:5px;color:var(--muted);font-size:12px">
+        objects <input id="nObj" type="number" value="5" min="4" max="6" style="width:56px">
+      </label>
+      <label class="row" style="gap:5px;color:var(--muted);font-size:12px">
+        seed <input id="seed" placeholder="random" style="width:110px">
+      </label>
+      <select id="clutter">
+        <option value="none">clear — normal pick &amp; place</option>
+        <option value="pickup">hard: objects crowded together</option>
+        <option value="drop">hard: object blocking the drop zone</option>
+        <option value="both">hard: both</option>
+        <option value="full">hard: drop zone already full</option>
+      </select>
+      <label class="row" style="gap:5px;color:var(--muted);font-size:12px">
+        <input type="checkbox" id="cbObs"> wall across the room
+      </label>
+    </div>
+    <p class="sub" style="margin:9px 0 0">
+      Randomising always keeps the rules: 4–6 objects, two sharing a colour, two
+      sharing a shape, every height distinct, nothing overlapping.
+    </p>
+
+    <h2 style="margin-top:13px">Manual control</h2>
+    <div class="grid3">
       <button data-turn="-45">⟲ 45°</button>
       <button data-move="0.5">▲ 0.5 m</button>
       <button data-turn="45">45° ⟳</button>
@@ -85,160 +137,23 @@
       <button data-move="-0.5">▼ 0.5 m</button>
       <button id="bDrop">release</button>
     </div>
-    <div class="row" style="margin-top:11px">
-      <button id="bReset" class="warn">reset scene</button>
-      <label class="row" style="gap:6px;color:var(--muted);font-size:12px">
-        <input type="checkbox" id="cbObs"> obstacle barrier
-      </label>
-    </div>
   </section>
 
-  <section class="panel" style="grid-column:1/-1">
-    <h2>Run the AI agent &nbsp;&middot;&nbsp; this is the real thing</h2>
-    <div class="row">
-      <input id="cmd" class="input" style="flex:1;min-width:260px"
-             value="Bring the round red thing"
-             placeholder="Type a plain-language command, e.g. Bring the tallest object">
-      <select id="prov"></select>
-      <input id="mdl" placeholder="model (optional)" style="width:190px">
-      <label class="row" style="gap:5px;color:var(--muted);font-size:12px">
-        steps <input id="msteps" type="number" value="60" min="4" max="60" style="width:62px">
-      </label>
-      <button id="bAgent" class="go">run agent</button>
-      <button id="bAgentStop" disabled>stop</button>
-    </div>
-    <p class="sub" style="margin:9px 0 10px">
-      Spawns the agent as its own process, as the brief requires. It sees only the
-      camera frame &mdash; no object names, positions or colours. Its stated reason
-      for each step appears below as it goes.
-    </p>
-    <div id="alog" style="height:230px;overflow:auto;background:var(--panel2);
-         border-radius:9px;padding:9px;font:12px/1.6 ui-monospace,Menlo,monospace">
-      <div class="t-sys">idle</div>
-    </div>
-  </section>
-
+  <!-- ─────────── logs ─────────── -->
   <section class="panel">
-    <h2>Scripted fetch &nbsp;&middot;&nbsp; optimal baseline, NOT the AI</h2>
-    <div class="row">
-      <select id="target"></select>
-      <button id="bRun" class="go">run fetch</button>
-      <button id="bStop" disabled>stop</button>
-    </div>
-    <p class="sub" style="margin:9px 0 10px">
-      Drives the real endpoints one step at a time so you can watch it. Uses engine
-      ground truth, so it is the <em>optimal</em> baseline — not the agent.
-    </p>
-    <div id="log"><div class="t-sys">ready</div></div>
+    <h2>Log &nbsp;·&nbsp; every step and the model's stated reason</h2>
+    <div id="alog" class="log"><div class="t-sys">idle</div></div>
   </section>
 </main>
 
 <script>
 const $ = s => document.querySelector(s);
-let steps = 0, running = false, busy = false;
-
-function log(msg, cls='t-sys'){
-  const d = document.createElement('div');
-  d.className = cls; d.textContent = msg;
-  $('#log').appendChild(d); $('#log').scrollTop = $('#log').scrollHeight;
-}
 const jget  = p => fetch(p).then(r => r.json());
 const jpost = (p,b) => fetch(p,{method:'POST',headers:{'Content-Type':'application/json'},
                                body:JSON.stringify(b||{})}).then(r => r.json());
 
-function refreshImages(){
-  const t = Date.now();
-  $('#pov').src = '/look?t=' + t;
-  $('#top').src = '/admin/overhead?t=' + t;
-}
-
-function setLocked(info){
-  const on = !!(info && info.locked);
-  const chip = $('#lockChip');
-  chip.style.display = on ? 'inline-flex' : 'none';
-  if(on) chip.textContent = `locked by ${info.owner} — manual control disabled`;
-  chip.style.color = 'var(--warn)';
-  document.querySelectorAll('[data-turn],[data-move],#bPickup,#bDrop,#bReset,#bRun')
-          .forEach(b => b.disabled = on);
-  // The agent panel stays live: the agent process is what holds the lock.
-  if(on && !agentTimer) $('#bAgent').disabled = true;
-  if(!on && !agentTimer) $('#bAgent').disabled = false;
-}
-
-async function refreshState(){
-  try{
-    const [st, dp, lk] = await Promise.all([jget('/state'), jget('/depth'), jget('/admin/lock')]);
-    setLocked(lk);
-    $('#sHead').textContent  = st.heading.toFixed(1) + '°';
-    $('#sX').textContent     = st.x.toFixed(2);
-    $('#sY').textContent     = st.y.toFixed(2);
-    $('#sRetry').textContent = st.retry_count;
-    $('#sDepth').textContent = dp.distance === null ? '—' : dp.distance.toFixed(2) + ' m';
-    $('#stateChip').textContent = st.state;
-    $('#holdChip').textContent  = st.holding ? 'holding' : 'empty';
-    $('#holdChip').style.color  = st.holding ? 'var(--good)' : 'var(--muted)';
-    $('#dot').style.background  = 'var(--good)';
-    return st;
-  }catch(e){ $('#dot').style.background = 'var(--bad)'; throw e; }
-}
-
-async function act(tool, args){
-  if(busy) return;
-  busy = true;
-  try{
-    let res;
-    if(tool === 'turn')        res = await jpost('/turn', args);
-    else if(tool === 'move')   res = await jpost('/move', args);
-    else if(tool === 'pickup') res = await jpost('/pickup');
-    else if(tool === 'drop')   res = await jpost('/drop');
-    steps++; $('#sSteps').textContent = steps;
-    const a = Object.keys(args||{}).length ? JSON.stringify(args) : '';
-    log(`${String(steps).padStart(2,'0')}  ${tool}${a} → ${JSON.stringify(res)}`, 't-' + tool);
-    refreshImages(); await refreshState();
-    return res;
-  }catch(e){ log('error: ' + e, 't-err'); }
-  finally{ busy = false; }
-}
-
-document.querySelectorAll('[data-turn]').forEach(b =>
-  b.onclick = () => act('turn', {degrees: +b.dataset.turn}));
-document.querySelectorAll('[data-move]').forEach(b =>
-  b.onclick = () => act('move', {distance: +b.dataset.move}));
-$('#bPickup').onclick = () => act('pickup', {});
-$('#bDrop').onclick   = () => act('drop', {});
-
-$('#bReset').onclick = async () => {
-  running = false;
-  await jpost('/admin/reset', {command: '', obstacles: $('#cbObs').checked, record: false});
-  steps = 0; $('#sSteps').textContent = 0;
-  $('#log').innerHTML = '';
-  log('scene reset' + ($('#cbObs').checked ? ' with obstacle barrier' : ''), 't-sys');
-  refreshImages(); refreshState();
-};
-
-$('#bRun').onclick = async () => {
-  if(running) return;
-  running = true; $('#bRun').disabled = true; $('#bStop').disabled = false;
-  const target = $('#target').value;
-  log('scripted fetch: ' + target, 't-sys');
-  for(let i = 0; i < 25 && running; i++){
-    const plan = await jget('/admin/next_action?target=' + encodeURIComponent(target));
-    if(plan.done){ log(plan.reason || 'done', 't-sys'); break; }
-    log('   plan: ' + plan.note, 't-sys');
-    const res = await act(plan.tool, plan.args);
-    if(plan.tool === 'drop'){
-      log(res && res.in_zone ? '✓ delivered to the drop zone' : '✗ missed the drop zone',
-          res && res.in_zone ? 't-move' : 't-err');
-      break;
-    }
-    await new Promise(r => setTimeout(r, 180));
-  }
-  running = false; $('#bRun').disabled = false; $('#bStop').disabled = true;
-};
-$('#bStop').onclick = () => { running = false; log('stopped', 't-sys'); };
-
-// ---------------- the AI agent ----------------
-let agentTimer = null, lastStep = 0;
+let steps = 0, busy = false, agentTimer = null, lastStep = 0;
+let layout = null, trail = [];
 
 function alog(msg, cls){
   const d = document.createElement('div');
@@ -246,81 +161,231 @@ function alog(msg, cls){
   $('#alog').appendChild(d); $('#alog').scrollTop = $('#alog').scrollHeight;
 }
 
+/* ───────────── map drawing ───────────── */
+const COLOURS = {red:'#d81f1f',blue:'#2659e6',yellow:'#f2cc1a',
+                 purple:'#9940d9',orange:'#f27a1a',teal:'#1ab8ae'};
+
+function drawMap(){
+  const c = $('#map'), g = c.getContext('2d');
+  const W = c.width, H = c.height;
+  g.clearRect(0,0,W,H);
+  g.fillStyle = '#eef1f7'; g.fillRect(0,0,W,H);
+  if(!layout) return;
+  const R = layout.room_half;
+  const X = x => (x + R)/(2*R)*W, Y = y => (R - y)/(2*R)*H;
+
+  g.strokeStyle = '#c8cfdd'; g.lineWidth = 1;
+  for(let i=-R; i<=R; i++){
+    g.beginPath(); g.moveTo(X(i),0); g.lineTo(X(i),H); g.stroke();
+    g.beginPath(); g.moveTo(0,Y(i)); g.lineTo(W,Y(i)); g.stroke();
+  }
+  g.strokeStyle = '#4a5468'; g.lineWidth = 7;
+  g.strokeRect(X(-R),Y(R),X(R)-X(-R),Y(-R)-Y(R));
+
+  // drop platform: black with a white rim
+  const dh = layout.drop_zone_half, dz = layout.drop_zone;
+  g.fillStyle = '#ffffff';
+  g.fillRect(X(dz[0]-dh)-3, Y(dz[1]+dh)-3, (X(dh)-X(-dh))+6, (Y(-dh)-Y(dh))+6);
+  g.fillStyle = '#0c0c10';
+  g.fillRect(X(dz[0]-dh), Y(dz[1]+dh), X(dh)-X(-dh), Y(-dh)-Y(dh));
+
+  if(layout.obstacles){
+    g.fillStyle = '#7a5433';
+    g.fillRect(X(-1.3), Y(1.22), X(1.3)-X(-1.3), Y(0.98)-Y(1.22));
+  }
+
+  // trajectory
+  if(trail.length > 1){
+    g.strokeStyle = '#ff9d2e'; g.lineWidth = 4; g.lineJoin = 'round';
+    g.beginPath(); g.moveTo(X(trail[0][0]), Y(trail[0][1]));
+    for(const [x,y] of trail.slice(1)) g.lineTo(X(x), Y(y));
+    g.stroke();
+    for(const [x,y,held] of trail){
+      g.fillStyle = held ? '#22d3a7' : '#ff9d2e';
+      g.beginPath(); g.arc(X(x),Y(y),4,0,7); g.fill();
+    }
+  }
+
+  // objects
+  for(const o of layout.objects){
+    const px = X(o.pos[0]), py = Y(o.pos[1]);
+    const r = 7 + o.height*22;
+    g.fillStyle = COLOURS[o.colour] || '#888';
+    g.strokeStyle = o.held ? '#ffffff' : 'rgba(0,0,0,.35)';
+    g.lineWidth = o.held ? 4 : 1.5;
+    g.beginPath();
+    if(o.kind === 'sphere') g.arc(px,py,r,0,7);
+    else if(o.kind === 'box') g.rect(px-r,py-r,2*r,2*r);
+    else if(o.kind === 'cylinder') g.rect(px-r*0.8,py-r,1.6*r,2*r);
+    else { g.moveTo(px,py-r); g.lineTo(px+r,py+r); g.lineTo(px-r,py+r); g.closePath(); }
+    g.fill(); g.stroke();
+    g.fillStyle = '#2a3042'; g.font = '600 12px ui-sans-serif';
+    g.textAlign = 'center';
+    g.fillText(o.label, px, py + r + 14);
+  }
+
+  // robot with a heading spike
+  const [rx,ry,rh] = layout.robot, a = -rh*Math.PI/180;
+  g.fillStyle = '#12161f';
+  g.beginPath(); g.arc(X(rx),Y(ry),11,0,7); g.fill();
+  g.strokeStyle = '#ff6b1a'; g.lineWidth = 4;
+  g.beginPath(); g.moveTo(X(rx),Y(ry));
+  g.lineTo(X(rx)+Math.cos(a)*24, Y(ry)-Math.sin(a)*24); g.stroke();
+}
+
+function updateTrailStats(){
+  let path = 0;
+  for(let i=1;i<trail.length;i++)
+    path += Math.hypot(trail[i][0]-trail[i-1][0], trail[i][1]-trail[i-1][1]);
+  const net = trail.length>1
+    ? Math.hypot(trail.at(-1)[0]-trail[0][0], trail.at(-1)[1]-trail[0][1]) : 0;
+  $('#sPath').textContent  = path.toFixed(2)+' m';
+  $('#sNet').textContent   = net.toFixed(2)+' m';
+  $('#sWander').textContent= net > 0.05 ? (path/net).toFixed(2) : '—';
+}
+
+/* ───────────── state ───────────── */
+function setLocked(info){
+  const on = !!(info && info.locked);
+  const chip = $('#lockChip');
+  chip.style.display = on ? 'inline-flex' : 'none';
+  chip.style.color = 'var(--warn)';
+  if(on) chip.textContent = 'locked by '+info.owner+' — manual control disabled';
+  document.querySelectorAll('[data-turn],[data-move],#bPickup,#bDrop,#bReset,#bRand,#bFixed')
+          .forEach(b => b.disabled = on);
+  if(!agentTimer) $('#bAgent').disabled = on;
+}
+
+async function refreshState(){
+  try{
+    const [st,dp,lk] = await Promise.all([jget('/state'),jget('/depth'),jget('/admin/lock')]);
+    setLocked(lk);
+    $('#sHead').textContent  = st.heading.toFixed(1)+'°';
+    $('#sDepth').textContent = dp.distance===null ? '—' : dp.distance.toFixed(2)+' m';
+    $('#sRetry').textContent = st.retry_count;
+    $('#stateChip').textContent = st.state;
+    $('#holdChip').textContent  = st.holding ? 'holding' : 'empty';
+    $('#holdChip').style.color  = st.holding ? 'var(--good)' : 'var(--muted)';
+    $('#dot').style.background  = 'var(--good)';
+    const last = trail.at(-1);
+    if(!last || Math.hypot(st.x-last[0], st.y-last[1]) > 0.03){
+      trail.push([st.x, st.y, st.holding]);
+      updateTrailStats();
+    }
+    return st;
+  }catch(e){ $('#dot').style.background='var(--bad)'; throw e; }
+}
+
+async function refreshLayout(){
+  layout = await jget('/admin/layout');
+  $('#seedChip').textContent = layout.seed ? ('seed '+layout.seed) : 'fixed scene';
+  $('#sObj').textContent = layout.objects.length;
+  drawMap();
+}
+function refreshPov(){ $('#pov').src = '/look?t='+Date.now(); }
+
+/* ───────────── manual control ───────────── */
+async function act(tool,args){
+  if(busy) return; busy = true;
+  try{
+    let res;
+    if(tool==='turn') res = await jpost('/turn',args);
+    else if(tool==='move') res = await jpost('/move',args);
+    else if(tool==='pickup') res = await jpost('/pickup');
+    else if(tool==='drop') res = await jpost('/drop');
+    steps++; $('#sSteps').textContent = steps;
+    alog(String(steps).padStart(2,'0')+'  '+tool+(Object.keys(args||{}).length?JSON.stringify(args):'')
+         +' → '+JSON.stringify(res), 't-'+tool);
+    refreshPov(); await refreshState(); await refreshLayout();
+  }catch(e){ alog('error: '+e,'t-err'); }
+  finally{ busy = false; }
+}
+document.querySelectorAll('[data-turn]').forEach(b => b.onclick = () => act('turn',{degrees:+b.dataset.turn}));
+document.querySelectorAll('[data-move]').forEach(b => b.onclick = () => act('move',{distance:+b.dataset.move}));
+$('#bPickup').onclick = () => act('pickup',{});
+$('#bDrop').onclick   = () => act('drop',{});
+
+/* ───────────── scene setup ───────────── */
+async function newScene(randomise){
+  const seedRaw = $('#seed').value.trim();
+  const body = {command:'', record:false, randomise,
+                obstacles:$('#cbObs').checked, clutter:$('#clutter').value,
+                n_objects:+$('#nObj').value};
+  if(randomise && seedRaw !== '') body.seed = +seedRaw;
+  const r = await jpost('/admin/reset', body);
+  steps = 0; trail = []; $('#sSteps').textContent = 0;
+  $('#alog').innerHTML = '';
+  alog(randomise ? ('randomised — seed '+r.seed+', '+r.n_objects+' objects, '+r.clutter)
+                 : 'fixed demo scene', 't-sys');
+  refreshPov(); await refreshState(); await refreshLayout(); updateTrailStats();
+}
+$('#bRand').onclick  = () => newScene(true);
+$('#bFixed').onclick = () => { $('#seed').value=''; $('#clutter').value='none'; newScene(false); };
+$('#bReset').onclick = async () => {
+  await jpost('/admin/reset',{command:'',record:false,
+                              obstacles:$('#cbObs').checked, clutter:$('#clutter').value});
+  steps=0; trail=[]; $('#sSteps').textContent=0; $('#alog').innerHTML='';
+  alog('scene reset','t-sys'); refreshPov(); await refreshState(); await refreshLayout();
+};
+
+/* ───────────── the AI agent ───────────── */
 async function pollAgent(runId){
-  const s = await jget('/admin/agent_status?run_id=' + encodeURIComponent(runId));
-  $('#bAgent').textContent = s.running ? (s.progress?.phase || 'Starting agent') : 'run agent';
+  const s = await jget('/admin/agent_status?run_id='+encodeURIComponent(runId));
   for(const st of s.steps){
     if(st.step <= lastStep) continue;
-    lastStep = st.step;
-    const a = Object.keys(st.args || {}).length ? JSON.stringify(st.args) : '';
-    alog(String(st.step).padStart(2,'0') + '  ' + st.tool + a, 't-' + st.tool);
-    if(st.reason) alog('     ' + st.reason);
+    lastStep = st.step; steps = st.step; $('#sSteps').textContent = steps;
+    const a = Object.keys(st.args||{}).length ? JSON.stringify(st.args) : '';
+    alog(String(st.step).padStart(2,'0')+'  '+st.tool+a, 't-'+st.tool);
+    if(st.reason) alog('     '+st.reason);
     const r = st.result || {};
-    if(r.collided) alog('     ! collision', 't-err');
-    if(st.tool === 'pickup')
-      alog(r.success ? '     grasped' : '     nothing in reach', r.success ? 't-move' : 't-err');
-    if(st.tool === 'drop')
-      alog(r.in_zone ? '     delivered to the platform' : '     released off the platform',
-           r.in_zone ? 't-move' : 't-err');
+    if(r.collided) alog('     ! collision — backed off 0.1 m','t-err');
+    if(st.tool==='pickup') alog(r.success?'     ✓ grasped':'     ✗ nothing in reach',
+                                r.success?'t-move':'t-err');
+    if(st.tool==='drop') alog(r.in_zone?'     ✓ delivered onto the platform'
+                                       :'     ✗ released off the platform',
+                              r.in_zone?'t-move':'t-err');
   }
-  refreshImages(); await refreshState();
-
+  refreshPov(); await refreshState(); await refreshLayout();
   if(!s.running){
     clearInterval(agentTimer); agentTimer = null;
     $('#bAgent').disabled = false; $('#bAgentStop').disabled = true;
-    const f = s.final || {}; const eo = f.engine_outcome || {};
-    alog('run ended: ' + (f.outcome || 'stopped') + ' - engine says '
-         + (eo.result || 'incomplete')
-         + (f.run_cost_usd != null ? '  ($' + f.run_cost_usd + ')' : ''));
-    if(s.stdout_tail && (!s.steps.length || s.returncode)) alog(s.stdout_tail, 't-err');
+    const f = s.final||{}, eo = f.engine_outcome||{};
+    alog('run ended: '+(f.outcome||'stopped')+' — engine says '+(eo.result||'incomplete')
+         +(f.run_cost_usd!=null?('  ($'+f.run_cost_usd+')'):''), 't-sys');
+    if(!s.steps.length && s.stdout_tail) alog(s.stdout_tail,'t-err');
   }
 }
 
 $('#bAgent').onclick = async () => {
-  const command = $('#cmd').value.trim();
-  if(!command) return;
-  $('#alog').innerHTML = ''; lastStep = 0;
+  const command = $('#cmd').value.trim(); if(!command) return;
+  $('#alog').innerHTML=''; lastStep=0; steps=0; trail=[];
   $('#bAgent').disabled = true; $('#bAgentStop').disabled = false;
   try{
-    const r = await jpost('/admin/agent_run', {
-      command: command, provider: $('#prov').value, model: $('#mdl').value.trim(),
-      max_steps: +$('#msteps').value, rpm: 12, obstacles: $('#cbObs').checked});
-    if(r.detail){
-      alog('could not start: ' + r.detail, 't-err');
-      $('#bAgent').disabled = false; $('#bAgentStop').disabled = true; return;
-    }
-    alog('"' + command + '"  -  ' + r.provider + ' ' + r.model);
-    agentTimer = setInterval(() => pollAgent(r.run_id).catch(() => {}), 1200);
-  }catch(e){
-    alog('error: ' + e, 't-err');
-    $('#bAgent').disabled = false; $('#bAgentStop').disabled = true;
-  }
+    const r = await jpost('/admin/agent_run',{command,provider:$('#prov').value,
+        model:$('#mdl').value.trim(), max_steps:+$('#msteps').value, rpm:12,
+        obstacles:$('#cbObs').checked});
+    if(r.detail){ alog('could not start: '+r.detail,'t-err');
+                  $('#bAgent').disabled=false; $('#bAgentStop').disabled=true; return; }
+    alog('"'+command+'"  —  '+r.provider+' '+r.model,'t-sys');
+    agentTimer = setInterval(() => pollAgent(r.run_id).catch(()=>{}), 1200);
+  }catch(e){ alog('error: '+e,'t-err');
+             $('#bAgent').disabled=false; $('#bAgentStop').disabled=true; }
 };
+$('#bAgentStop').onclick = async () => { await jpost('/admin/agent_stop'); alog('stop requested'); };
 
-$('#bAgentStop').onclick = async () => {
-  await jpost('/admin/agent_stop'); alog('stop requested');
-};
-
+/* ───────────── init ───────────── */
 (async function init(){
-  const t = await jget('/admin/targets');
-  $('#target').innerHTML = t.targets.map(x => `<option>${x}</option>`).join('');
   const pv = await jget('/admin/providers');
   $('#prov').innerHTML = Object.entries(pv.available)
-      .map(([k,v]) => '<option value="' + k + '"' + (v ? '' : ' disabled') + '>'
-           + k + (v ? '' : ' (no key)') + '</option>').join('');
-  const firstOk = Object.entries(pv.available).find(([,v]) => v);
-  if(firstOk) $('#prov').value = firstOk[0];
-  refreshImages(); refreshState();
-  // While an agent holds the lock the console is a spectator, so the views must
-  // refresh on their own -- otherwise the run is invisible and there is nothing
-  // to watch, which is the whole point during a demo or a judged run.
-  let wasLocked = false;
+    .map(([k,v]) => '<option value="'+k+'"'+(v?'':' disabled')+'>'+k+(v?'':' (no key)')+'</option>').join('');
+  const ok = Object.entries(pv.available).find(([,v]) => v);
+  if(ok) $('#prov').value = ok[0];
+  refreshPov(); await refreshState(); await refreshLayout();
   setInterval(async () => {
-    if(busy || running) return;
-    const st = await refreshState().catch(() => null);
+    if(busy) return;
     const locked = $('#lockChip').style.display !== 'none';
-    if(locked || wasLocked) refreshImages();   // one extra tick after release
-    wasLocked = locked;
+    await refreshState().catch(()=>{});
+    if(locked || agentTimer){ refreshPov(); await refreshLayout().catch(()=>{}); }
   }, 1200);
 })();
 </script>

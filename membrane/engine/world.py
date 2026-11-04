@@ -60,12 +60,38 @@ def _cone_vertices(radius: float, height: float, segments: int = 24) -> str:
     return " ".join(pts)
 
 
+#: Six shapes, six colours, several sizes each. The PDF allows 4-6 primitives,
+#: so variety comes from SIZE rather than from more objects: same colour at two
+#: sizes, same shape at two sizes. Adding a seventh object would break the spec.
+PALETTE: dict[str, tuple[float, float, float, float]] = {
+    "red":    (0.85, 0.12, 0.12, 1.0),
+    "blue":   (0.15, 0.35, 0.90, 1.0),
+    "yellow": (0.95, 0.80, 0.10, 1.0),
+    "purple": (0.60, 0.25, 0.85, 1.0),
+    "orange": (0.95, 0.48, 0.10, 1.0),
+    "teal":   (0.10, 0.72, 0.68, 1.0),
+}
+
+#: kind -> (mujoco size tuple, height above floor, descriptive size word)
+SHAPE_SIZES: dict[str, list[tuple[tuple[float, ...], float, str]]] = {
+    "sphere":   [((0.12,), 0.24, "small"), ((0.16,), 0.32, "medium"), ((0.21,), 0.42, "large")],
+    "box":      [((0.12, 0.12, 0.12), 0.24, "small"),
+                 ((0.16, 0.16, 0.16), 0.32, "medium"),
+                 ((0.21, 0.21, 0.21), 0.42, "large")],
+    "cylinder": [((0.12, 0.14), 0.28, "short"), ((0.14, 0.19), 0.38, "medium"),
+                 ((0.16, 0.25), 0.50, "tall")],
+    "cone":     [((0.16, 0.30), 0.30, "small"), ((0.19, 0.44), 0.44, "medium"),
+                 ((0.22, 0.58), 0.58, "large")],
+}
+
+
 @dataclass
 class Scene:
     objects: list[SceneObject]
     drop_zone: tuple[float, float]
     robot_start: tuple[float, float, float]   # x, y, heading(deg)
     obstacles: list[tuple[float, float, float, float]] = field(default_factory=list)
+    clutter: str = "none"
 
 
 def default_scene(with_obstacles: bool = False) -> Scene:
@@ -93,6 +119,113 @@ def default_scene(with_obstacles: bool = False) -> Scene:
     ]
     obstacles = [(0.0, 1.1, 1.3, 0.12)] if with_obstacles else []
     return Scene(objects=objects, drop_zone=(0.0, -2.8), robot_start=(0.0, 0.0, 0.0), obstacles=obstacles)
+
+
+def _free_spot(rng, placed, min_gap, dz, dz_gap, tries=400):
+    """A floor position clear of everything already placed and of the drop zone."""
+    import math
+
+    lim = ROOM_HALF - 0.6
+    for _ in range(tries):
+        x, y = rng.uniform(-lim, lim), rng.uniform(-lim, lim)
+        if abs(x - dz[0]) < DROP_ZONE_HALF + dz_gap and abs(y - dz[1]) < DROP_ZONE_HALF + dz_gap:
+            continue
+        if all(math.dist((x, y), q) >= min_gap for q in placed):
+            return x, y
+    return None
+
+
+def random_scene(seed: int | None = None, n_objects: int = 5,
+                 clutter: str = "none", with_obstacles: bool = False) -> Scene:
+    """A fresh scene that still satisfies every rule the PDF states.
+
+    Guaranteed, not hoped for:
+      * 4 to 6 primitives (the PDF's range)
+      * at least two share a colour, at least two share a shape
+      * every height distinct, so "tallest"/"shortest" resolve to one object
+      * nothing overlaps, nothing sits on the drop zone, the robot starts clear
+
+    `clutter` creates the hard cases deliberately:
+      "none"    objects well separated -- a clean pick and place
+      "pickup"  two objects placed close together, so reaching one risks the other
+      "drop"    an object parked just in front of the drop zone
+      "both"    both of the above
+      "full"    the drop zone already occupied (objects sit ON the platform)
+    """
+    import math
+    import random as _random
+
+    rng = _random.Random(seed)
+    n_objects = max(4, min(6, n_objects))
+
+    dz = (round(rng.uniform(-2.9, 2.9), 2), round(rng.uniform(-2.9, 2.9), 2))
+
+    # --- choose kinds and colours so the sharing rules hold by construction ---
+    # Draw distinct kinds first, then force exactly one duplicate. Sampling with
+    # replacement produced scenes of five spheres, where most commands are
+    # ambiguous and the shape-sharing rule is met only by accident.
+    pool = list(SHAPE_SIZES)
+    rng.shuffle(pool)
+    kinds = [pool[i % len(pool)] for i in range(n_objects)]
+    kinds[1] = kinds[0]                       # two share a shape
+    colours = rng.sample(list(PALETTE), k=min(n_objects, len(PALETTE)))
+    while len(colours) < n_objects:
+        colours.append(rng.choice(list(PALETTE)))
+    colours[2 % n_objects] = colours[0]       # two share a colour
+    rng.shuffle(kinds)
+
+    # --- distinct heights ---
+    chosen: list[tuple[str, tuple, float, str]] = []
+    used_heights: set[float] = set()
+    for kind in kinds:
+        opts = [o for o in SHAPE_SIZES[kind] if o[1] not in used_heights] or SHAPE_SIZES[kind]
+        size, height, word = rng.choice(opts)
+        while height in used_heights:
+            height = round(height + 0.03, 2)
+        used_heights.add(height)
+        chosen.append((kind, size, height, word))
+
+    placed: list[tuple[float, float]] = []
+    objects: list[SceneObject] = []
+    for i, (kind, size, height, word) in enumerate(chosen):
+        gap = 1.25
+        if clutter in ("pickup", "both") and i == 1 and placed:
+            # Deliberately tight: approaching one risks brushing the other.
+            ax, ay = placed[0]
+            ang = rng.uniform(0, 2 * math.pi)
+            pos = (round(ax + 0.52 * math.cos(ang), 2), round(ay + 0.52 * math.sin(ang), 2))
+        elif clutter == "full" and i < 2:
+            # "Filled" must mean occupied, not merely nearby: park objects ON
+            # the platform so there is no clear space to release into.
+            ang = rng.uniform(0, 2 * math.pi)
+            r = rng.uniform(0.0, DROP_ZONE_HALF * 0.55)
+            pos = (round(dz[0] + r * math.cos(ang), 2), round(dz[1] + r * math.sin(ang), 2))
+        elif clutter in ("drop", "both") and i == 0:
+            # Parked right in front of the zone, so it cannot be driven onto.
+            side = rng.choice([-1, 1])
+            if rng.random() < 0.5:
+                pos = (round(dz[0] + side * (DROP_ZONE_HALF + 0.42), 2), dz[1])
+            else:
+                pos = (dz[0], round(dz[1] + side * (DROP_ZONE_HALF + 0.42), 2))
+        else:
+            spot = _free_spot(rng, placed, gap, dz, 0.75)
+            if spot is None:
+                spot = _free_spot(rng, placed, 0.8, dz, 0.5) or (0.0, 0.0)
+            pos = (round(spot[0], 2), round(spot[1], 2))
+        placed.append(pos)
+        colour = colours[i]
+        objects.append(SceneObject(
+            name=f"obj{i}", kind=kind, colour=colour, rgba=PALETTE[colour],
+            pos=pos, size=size, height=height,
+            label=f"{word} {colour} {kind}"))
+
+    # --- robot somewhere clear of everything ---
+    spot = _free_spot(rng, placed, 0.9, dz, 0.7) or (0.0, 0.0)
+    robot = (round(spot[0], 2), round(spot[1], 2), round(rng.uniform(0, 360), 1))
+
+    obstacles = [(0.0, 1.1, 1.3, 0.12)] if with_obstacles else []
+    return Scene(objects=objects, drop_zone=dz, robot_start=robot,
+                 obstacles=obstacles, clutter=clutter)
 
 
 def build_xml(scene: Scene) -> str:
@@ -195,9 +328,9 @@ def build_xml(scene: Scene) -> str:
          drives blind; raising it to 70 mm gives it visible vertical faces while
          keeping it something the robot drives onto rather than over. -->
     <geom name="dropzone" type="box" pos="{dz_x} {dz_y} 0.035"
-          size="{DROP_ZONE_HALF} {DROP_ZONE_HALF} 0.035" rgba="0.10 0.78 0.25 1"/>
+          size="{DROP_ZONE_HALF} {DROP_ZONE_HALF} 0.035" rgba="0.05 0.05 0.06 1"/>
     <geom name="dropzone_rim" type="box" pos="{dz_x} {dz_y} 0.074"
-          size="{DROP_ZONE_HALF} {DROP_ZONE_HALF} 0.004" rgba="0.92 0.97 0.30 1"
+          size="{DROP_ZONE_HALF} {DROP_ZONE_HALF} 0.004" rgba="0.98 0.98 1.0 1"
           contype="0" conaffinity="0"/>
     {"".join(walls)}
     {"".join(body_xml)}

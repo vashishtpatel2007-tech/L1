@@ -26,6 +26,7 @@ from __future__ import annotations
 import io
 import json
 import queue
+import random
 import subprocess
 import sys
 import threading
@@ -40,7 +41,7 @@ from pydantic import BaseModel, Field
 
 from .recorder import write_clip
 from .sim import Sim
-from .world import default_scene
+from .world import DROP_ZONE_HALF, default_scene, random_scene
 
 
 class SimWorker:
@@ -51,6 +52,8 @@ class SimWorker:
         self._ready = threading.Event()
         self.command = ""
         self.obstacles = False
+        self.clutter = "none"
+        self.seed: int | None = None
         self._thread = threading.Thread(target=self._loop, name="sim", daemon=True)
         self._thread.start()
         if not self._ready.wait(timeout=60):
@@ -140,6 +143,10 @@ class ResetBody(BaseModel):
     command: str = ""
     obstacles: bool = False
     record: bool = True
+    randomise: bool = False
+    seed: int | None = None          # omit for a different scene every time
+    n_objects: int = 5               # the PDF allows 4 to 6
+    clutter: str = "none"            # none | pickup | drop | both | full
 
 
 # ------------------------------------------------------------ agent-facing --
@@ -181,20 +188,35 @@ def post_drop(_: None = Depends(guard)) -> dict[str, Any]:
 
 # -------------------------------------------------------------------- admin --
 def _reset(w: SimWorker, body: ResetBody) -> dict[str, Any]:
-    """Reset state in place when the scene structure is unchanged; only rebuild
-    (closing the old GL context first) when the obstacle layout actually differs."""
+    """Reset state in place when the scene is unchanged; rebuild (closing the
+    old GL context first) when the layout actually differs.
+
+    A rebuild is the expensive, fragile path -- a second Renderer without
+    closing the first corrupts the context -- so it happens only when the scene
+    genuinely changes, never on a plain reset between runs.
+    """
     rebuilt = False
-    if body.obstacles != w.obstacles:
+    want_new_scene = body.randomise or body.obstacles != w.obstacles or body.clutter != w.clutter
+
+    if want_new_scene:
+        seed = body.seed if body.seed is not None else random.randrange(1, 10**9)
+        scene = (random_scene(seed=seed, n_objects=body.n_objects,
+                              clutter=body.clutter, with_obstacles=body.obstacles)
+                 if body.randomise else default_scene(with_obstacles=body.obstacles))
         w.sim.close()
-        w.sim = Sim(scene=default_scene(with_obstacles=body.obstacles), record_video=body.record)
-        w.obstacles = body.obstacles
+        w.sim = Sim(scene=scene, record_video=body.record)
+        w.obstacles, w.clutter = body.obstacles, body.clutter
+        w.seed = seed if body.randomise else None
         rebuilt = True
     else:
         w.sim.record_video = body.record
         w.sim.reset_state()
+
     w.command = body.command
     return {"ok": True, "obstacles": body.obstacles, "recording": body.record,
-            "model_rebuilt": rebuilt}
+            "model_rebuilt": rebuilt, "randomised": body.randomise,
+            "seed": w.seed, "clutter": w.clutter,
+            "n_objects": len(w.sim.scene.objects)}
 
 
 @app.post("/admin/reset")
@@ -258,6 +280,28 @@ def admin_next_action(target: str, _: None = Depends(guard)) -> dict[str, Any]:
 def admin_targets() -> dict[str, Any]:
     """Operator console: the labels a scripted fetch can be pointed at."""
     return worker.call(lambda w: {"targets": [o.label for o in w.sim.scene.objects]})
+
+
+@app.get("/admin/layout")
+def admin_layout() -> dict[str, Any]:
+    """OPERATOR ONLY. Scene geometry for drawing the dashboard. Never reaches
+    the agent: audit/check_leakage.py fails any run whose log mentions /admin/."""
+    def job(w: SimWorker) -> dict[str, Any]:
+        return {
+            "seed": w.seed, "clutter": w.clutter, "obstacles": bool(w.sim.scene.obstacles),
+            "room_half": 4.0, "drop_zone_half": DROP_ZONE_HALF,
+            "drop_zone": list(w.sim.scene.drop_zone),
+            "robot": [round(w.sim.x, 3), round(w.sim.y, 3), round(w.sim.heading, 1)],
+            "objects": [
+                {"label": o.label, "kind": o.kind, "colour": o.colour,
+                 "height": o.height,
+                 "pos": [round(float(v), 3) for v in w.sim.data.xpos[w.sim.obj_bids[o.name]][:2]],
+                 "held": w.sim.holding == o.name}
+                for o in w.sim.scene.objects
+            ],
+        }
+
+    return worker.call(job)
 
 
 @app.get("/admin/truth")
