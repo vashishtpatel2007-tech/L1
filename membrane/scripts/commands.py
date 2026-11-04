@@ -30,17 +30,23 @@ SHAPE_WORDS = {
 COLOUR_WORDS = {"red", "blue", "green", "yellow", "orange", "purple", "white", "black"}
 
 
-def truth(reset: bool = True) -> dict:
+def truth(reset: bool = True, fixed: bool = False) -> dict:
     """Ground truth for a FRESH scene.
 
     Objects stay where previous runs dropped them, so a snapshot taken without
     resetting resolves distance-based commands against moved objects and yields
-    the wrong expected target. Always reset first unless explicitly told not to.
+    the wrong expected target.
+
+    `fixed` loads the demo scene so a regression number is comparable run to
+    run. Without it the harness scores whatever scene is loaded, which is the
+    right thing when checking a randomised layout but useless as a baseline.
     """
     if reset:
+        body = {"command": "", "record": False}
+        if fixed:
+            body.update(obstacles=False, clutter="none", randomise=False)
         req = urllib.request.Request(
-            f"{ENGINE}/admin/reset",
-            data=json.dumps({"command": "", "obstacles": False, "record": False}).encode(),
+            f"{ENGINE}/admin/reset", data=json.dumps(body).encode(),
             headers={"Content-Type": "application/json"}, method="POST")
         urllib.request.urlopen(req, timeout=60).read()
     with urllib.request.urlopen(f"{ENGINE}/admin/truth", timeout=30) as r:

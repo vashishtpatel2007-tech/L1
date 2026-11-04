@@ -70,9 +70,11 @@ def main() -> int:
     ap.add_argument("--max-steps", type=int, default=35)
     ap.add_argument("--limit", type=int, default=0, help="only the first N commands")
     ap.add_argument("--obstacles", action="store_true")
+    ap.add_argument("--current-scene", action="store_true",
+                    help="score the scene already loaded instead of the fixed demo one")
     a = ap.parse_args()
 
-    t = truth()
+    t = truth(fixed=not a.current_scene)
     cases = []
     for c in COMMAND_SET:
         r = resolve(c, t)
