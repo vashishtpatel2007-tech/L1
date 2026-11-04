@@ -74,14 +74,19 @@ PALETTE: dict[str, tuple[float, float, float, float]] = {
 
 #: kind -> (mujoco size tuple, height above floor, descriptive size word)
 SHAPE_SIZES: dict[str, list[tuple[tuple[float, ...], float, str]]] = {
-    "sphere":   [((0.12,), 0.24, "small"), ((0.16,), 0.32, "medium"), ((0.21,), 0.42, "large")],
-    "box":      [((0.12, 0.12, 0.12), 0.24, "small"),
-                 ((0.16, 0.16, 0.16), 0.32, "medium"),
-                 ((0.21, 0.21, 0.21), 0.42, "large")],
+    "sphere":   [((0.12,), 0.24, "small"), ((0.16,), 0.32, "medium"), ((0.20,), 0.40, "large")],
+    # Box half-extents are capped at 0.16. A box is widest at its corner
+    # (half x sqrt2), so a 0.21 box contacts the robot at 0.14 + 0.30 = 0.44 m;
+    # the engine then backs off 0.10 m to 0.54, outside the 0.5 m pickup reach,
+    # and the object becomes physically ungraspable. Measured: large objects
+    # succeeded 81.8% of the time against 95% for small ones.
+    "box":      [((0.11, 0.11, 0.11), 0.22, "small"),
+                 ((0.14, 0.14, 0.14), 0.28, "medium"),
+                 ((0.16, 0.16, 0.16), 0.32, "large")],
     "cylinder": [((0.12, 0.14), 0.28, "short"), ((0.14, 0.19), 0.38, "medium"),
                  ((0.16, 0.25), 0.50, "tall")],
-    "cone":     [((0.16, 0.30), 0.30, "small"), ((0.19, 0.44), 0.44, "medium"),
-                 ((0.22, 0.58), 0.58, "large")],
+    "cone":     [((0.15, 0.30), 0.30, "small"), ((0.18, 0.44), 0.44, "medium"),
+                 ((0.20, 0.56), 0.56, "large")],
 }
 
 
