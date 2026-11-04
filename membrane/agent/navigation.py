@@ -15,6 +15,12 @@ import numpy as np
 from PIL import Image
 
 
+#: A 45 degree sweep covers the room in eight looks, but each one costs a step
+#: and the marker is visible from only a minority of headings. Four is enough to
+#: catch the easy cases without spending a quarter of the budget on a maybe.
+MAX_SURVEY_TURNS = 4
+
+
 def relative_angle(target: float, heading: float) -> float:
     return (target - heading + 180.0) % 360.0 - 180.0
 
@@ -134,10 +140,17 @@ class ReturnNavigator:
             if abs(restore) > 2:
                 return "turn", {"degrees": round(restore, 2)}, "delivery marker remembered from camera; resuming object search"
             return None
-        if self.survey_turns >= 8:
-            raise RuntimeError("Delivery platform could not be measured from the camera; stopping before pickup.")
+        if self.survey_turns >= MAX_SURVEY_TURNS:
+            # Give up on the pre-measurement, do NOT end the run. The marker is
+            # in view from only a minority of headings, and a robot that cannot
+            # see it from where it happens to start is not a failed run -- it
+            # just has to find the marker later, which the model can do. Raising
+            # here burned the whole attempt before the object search began.
+            self.prepared = True
+            self.phase = "Finding requested object"
+            return None
         self.survey_turns += 1
-        return "turn", {"degrees": 45}, "surveying the room to remember the delivery marker before pickup"
+        return "turn", {"degrees": 45}, "looking for the delivery marker before picking up"
 
     @staticmethod
     def _angle(point, pose):
@@ -146,11 +159,18 @@ class ReturnNavigator:
 
     def decide(self, jpg: bytes, pose: dict):
         if not pose["holding"]:
-            raise RuntimeError("Return navigation requires a confirmed pickup.")
+            return None
         if self.goal is None:
-            raise RuntimeError("No camera-observed delivery position; refusing an unverified drop.")
+            # Never measured it. Hand back to the model, which can find the
+            # marker visually -- far better than abandoning a successful grasp.
+            self.phase = "Carrying, looking for the delivery marker"
+            return None
         if pose["state"] == "Blocked":
-            raise RuntimeError("The previously clear return route is now obstructed; holding the item safely.")
+            # Obstructed: let the model back out and re-route rather than
+            # stranding the robot holding the item.
+            self.phase = "Carrying, route blocked, recovering"
+            self.return_route = None
+            return None
         here = (pose["x"], pose["y"])
         if self.return_route is None:
             self.return_route = list(reversed(self.route))

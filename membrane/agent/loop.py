@@ -435,6 +435,10 @@ SWEEP_DEG = 70
 MAX_BLIND_TURNS = 6
 
 
+def model_calls_used(spend: dict[str, Any]) -> int:
+    return int(spend.get("calls", 0))
+
+
 def run(command: str, model: str | None, mock: bool, max_steps: int,
         obstacles: bool, run_id: str | None = None,
         provider: str = "anthropic", rpm: int | None = None,
@@ -475,13 +479,27 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
     history: list[str] = []
     finished_reason = "max_steps"
 
-    for step in range(1, max_steps + 1):
+    # The budget counts MODEL CALLS, not raw steps. The brief's 25-soft/60-hard
+    # figures are about API cost, and free actions -- deterministic survey turns
+    # and auto-scans past empty frames -- cost nothing. Counting them spent the
+    # budget on steps that were never charged for, and runs died metres from the
+    # platform having made only fourteen calls out of twenty-four steps.
+    step = 0
+    hard_cap = max_steps * 3
+    while (step if mock else model_calls_used(spend)) < max_steps and step < hard_cap:
+        step += 1
         jpg: bytes = _get("/look")
         frame_rel = log.save_frame(jpg)
         st = sanitize("state", _get("/state"))
         depth = sanitize("depth", _get("/depth")).get("distance")
-        action = (navigator.decide(jpg, st) if st["holding"]
-                  else navigator.prepare(jpg, st))
+        try:
+            action = (navigator.decide(jpg, st) if st["holding"]
+                      else navigator.prepare(jpg, st))
+        except Exception as e:
+            # The navigator is an optimisation. If it misbehaves the model can
+            # still do the whole task from pixels, so degrade rather than die.
+            history.append(f"{step}: return-navigation unavailable ({type(e).__name__})")
+            action = None
         log.progress(navigator.phase if action else "Finding requested object", step)
 
         status = (
