@@ -155,6 +155,7 @@ class ResetBody(BaseModel):
     n_objects: int = 5               # the PDF allows 4 to 6
     obstacles: bool | None = None    # None -> keep the current layout
     clutter: str | None = None       # None -> keep the current layout
+    fixed: bool = False              # True -> rebuild the fixed demo scene
 
 
 # ------------------------------------------------------------ agent-facing --
@@ -207,13 +208,19 @@ def _reset(w: SimWorker, body: ResetBody) -> dict[str, Any]:
     clutter = w.clutter if body.clutter is None else body.clutter
 
     rebuilt = False
-    want_new_scene = body.randomise or obstacles != w.obstacles or clutter != w.clutter
+    # `fixed` is needed because "unchanged" is the default: without an explicit
+    # request there is no way back to the demo scene once a random one is loaded.
+    want_new_scene = (body.randomise or body.fixed
+                      or obstacles != w.obstacles or clutter != w.clutter)
 
     if want_new_scene:
         seed = body.seed if body.seed is not None else random.randrange(1, 10**9)
-        scene = (random_scene(seed=seed, n_objects=body.n_objects,
-                              clutter=clutter, with_obstacles=obstacles)
-                 if body.randomise else default_scene(with_obstacles=obstacles))
+        if body.randomise and not body.fixed:
+            scene = random_scene(seed=seed, n_objects=body.n_objects,
+                                 clutter=clutter, with_obstacles=obstacles)
+        else:
+            scene = default_scene(with_obstacles=obstacles)
+            clutter = "none"
         w.sim.close()
         w.sim = Sim(scene=scene, record_video=body.record)
         w.obstacles, w.clutter = obstacles, clutter

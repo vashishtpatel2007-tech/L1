@@ -44,7 +44,7 @@ def truth(reset: bool = True, fixed: bool = False) -> dict:
     if reset:
         body = {"command": "", "record": False}
         if fixed:
-            body.update(obstacles=False, clutter="none", randomise=False)
+            body.update(fixed=True, obstacles=False, clutter="none", randomise=False)
         req = urllib.request.Request(
             f"{ENGINE}/admin/reset", data=json.dumps(body).encode(),
             headers={"Content-Type": "application/json"}, method="POST")

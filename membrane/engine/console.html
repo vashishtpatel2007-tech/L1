@@ -308,8 +308,8 @@ $('#bDrop').onclick   = () => act('drop',{});
 /* ───────────── scene setup ───────────── */
 async function newScene(randomise){
   const seedRaw = $('#seed').value.trim();
-  const body = {command:'', record:false, randomise,
-                obstacles:$('#cbObs').checked, clutter:$('#clutter').value,
+  const body = {command:'', record:false, randomise, fixed:!randomise,
+                obstacles:$('#cbObs').checked, clutter:randomise?$('#clutter').value:'none',
                 n_objects:+$('#nObj').value};
   if(randomise && seedRaw !== '') body.seed = +seedRaw;
   const r = await jpost('/admin/reset', body);
