@@ -53,6 +53,37 @@ def clean(raw: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "", raw)
 
 
+def read_wrapped() -> str:
+    """Read a key that arrives split across several lines.
+
+    A single hidden prompt reads one line and stops at the first newline, so a
+    key pasted from an email or a slide -- where it is wrapped -- delivers only
+    its first line. Pasting "sk-ant-usr-" and nothing else is not a short key,
+    it is a key cut at the first line break.
+
+    Each hidden read consumes one line of whatever is already in the paste
+    buffer, so reading repeatedly collects the whole thing without ever
+    echoing it. Stop on a blank line, or as soon as there is enough for a
+    complete key.
+    """
+    print("Paste the key (it will not be shown). It may span several lines.")
+    print("Press Enter on an empty line when you are done.\n")
+    parts: list[str] = []
+    for _ in range(12):
+        try:
+            line = getpass.getpass("> ")
+        except (EOFError, KeyboardInterrupt):
+            break
+        if not line.strip():
+            break
+        parts.append(line)
+    # Deliberately no early stop on length. Stopping once the key "looked long
+    # enough" swallowed the first three lines of a four-line paste and tested
+    # 99 of its 106 characters -- a self-inflicted wrong key, reported as the
+    # API rejecting a correct one. Only a blank line ends the read.
+    return "".join(parts)
+
+
 def from_clipboard() -> str:
     for cmd in (["pbpaste"], ["xclip", "-selection", "clipboard", "-o"], ["wl-paste"]):
         try:
@@ -112,14 +143,23 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--clipboard", action="store_true",
                     help="read the key from the system clipboard")
+    ap.add_argument("--file", help="read the key from a file you saved it in")
     a = ap.parse_args()
 
-    raw = from_clipboard() if a.clipboard else getpass.getpass(
-        "Paste the Anthropic API key (it will not be shown), then press Enter:\n> ")
+    if a.clipboard:
+        raw = from_clipboard()
+    elif a.file:
+        raw = Path(a.file).read_text()
+    else:
+        raw = read_wrapped()
     key = clean(raw)
 
     if not key:
         print("  nothing to read. Copy the key, then run this again.")
+        return 1
+    if key == "sk-ant-usr-" or key in API_PREFIXES:
+        print("  only the prefix arrived, so the paste was cut at a line break. "
+              "Run it again and paste every line, or use --file.")
         return 1
     print(f"\n  read {len(key)} characters, starting {key[:11]}...")
 

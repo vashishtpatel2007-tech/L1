@@ -124,6 +124,14 @@ class AnthropicVLM:
     # (input, output) USD per million tokens, for budget tracking only
     prices = {"claude-sonnet-5-5": (3.0, 15.0), "claude-haiku-5-5": (1.0, 5.0)}
 
+    #: Forced tool choice ("any") makes the model emit exactly one tool call
+    #: per step, which is what the control loop expects. Some keys route to a
+    #: model configuration that rejects it ("tool_choice ... any ... not
+    #: supported for this model"), and the organizers' Console key is one. The
+    #: first such rejection flips this for the rest of the session, so the
+    #: fallback to "auto" costs one detection rather than a retry every step.
+    _force_tools = True
+
     def __init__(self, model: str = "claude-sonnet-5-5", max_tokens: int = 700,
                  rpm: int | None = None) -> None:
         self.model, self.max_tokens = model, max_tokens
@@ -137,7 +145,8 @@ class AnthropicVLM:
             # Cached: the preamble is byte-identical on every step of every run.
             "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
             "tools": tools,
-            "tool_choice": {"type": "any"},     # exactly one tool call per step
+            "tool_choice": ({"type": "any"} if AnthropicVLM._force_tools
+                            else {"type": "auto"}),
             "messages": [{"role": "user", "content": [
                 {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
                                              "data": base64.b64encode(image_jpeg).decode()}},
@@ -145,8 +154,19 @@ class AnthropicVLM:
             ]}],
         }
         _pace(self.name, self.rpm)
-        out = _post("https://api.anthropic.com/v1/messages",
-                    {"x-api-key": self.key, "anthropic-version": "2023-06-01"}, body)
+        url = "https://api.anthropic.com/v1/messages"
+        hdr = {"x-api-key": self.key, "anthropic-version": "2023-06-01"}
+        try:
+            out = _post(url, hdr, body)
+        except RuntimeError as e:
+            # The one retry worth making: a model that refuses forced tool
+            # choice. Switch to "auto", remember it, and try this step again.
+            if AnthropicVLM._force_tools and "tool_choice" in str(e):
+                AnthropicVLM._force_tools = False
+                body["tool_choice"] = {"type": "auto"}
+                out = _post(url, hdr, body)
+            else:
+                raise
         d = Decision(tool=None, provider=self.name, model=self.model)
         for block in out.get("content", []):
             if block.get("type") == "text":
