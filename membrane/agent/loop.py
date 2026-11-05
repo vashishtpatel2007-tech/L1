@@ -62,8 +62,9 @@ exactly one tool call.
 
 CAMERA GEOMETRY
 - The frame is 640 wide and 480 tall, with a 90 degree horizontal field of view.
-- To centre something seen at horizontal pixel u, turn by (u - 320) / 640 * 90
-  degrees. Positive turns right.
+- To centre something seen at horizontal pixel u, turn by degrees(atan((u - 320) / 320))
+  near the image centre row. Positive turns right. Use the metric vision aid
+  when available; its projection also accounts for camera tilt and pixel row.
 - The camera sits 0.5 m up and is tilted 10 degrees down, so the floor fills the
   lower frame and items further away appear higher and smaller.
 
@@ -230,9 +231,9 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Rotate in place. POSITIVE turns RIGHT, NEGATIVE turns LEFT.\n"
             "If what you want is VISIBLE in the frame, you must not guess a direction: "
-            "set degrees = (u - 320) / 640 * 90, where u is its horizontal pixel column. "
-            "Column 150 is left of centre, so that gives about -40 (turn LEFT). "
-            "Column 500 is right of centre, so that gives about +25 (turn RIGHT). "
+            "set degrees = degrees(atan((u - 320) / 320)), where u is its horizontal pixel column. "
+            "Column 150 is left of centre, so that gives about -28 (turn LEFT). "
+            "Column 500 is right of centre, so that gives about +29 (turn RIGHT). "
             "Only use a fixed sweep of about 50 degrees when the frame contains "
             "nothing you are looking for."
         ),
@@ -531,6 +532,10 @@ def _mock_decide(jpg: bytes, st: dict[str, Any], depth: float | None,
     holding = st["holding"]
     if holding:
         memory["grasp_fails"] = 0
+        # Dark walls and the robot's own hands are not delivery markers.
+        # The calibrated navigator already searched a full circle; refuse an
+        # unverified fallback move or release when that search was exhausted.
+        return "finish", {"outcome": "delivery marker not confidently located"}, "cannot safely place without a verified delivery marker"
     want = bl["zone"] if holding else bl["target"]
     label = "delivery patch" if holding else "candidate item"
     last = memory.get("last_tool")
@@ -542,7 +547,7 @@ def _mock_decide(jpg: bytes, st: dict[str, Any], depth: float | None,
         return "turn", {"degrees": 50}, f"no {label} in view; sweeping right"
 
     memory["sweeps"] = 0
-    off = (want["u"] - 320) / 640 * 90
+    off = math.degrees(math.atan((want["u"] - 320) / 320))
     # Anti-oscillation: never turn twice in a row while a target is visible.
     # A greedy re-centre every frame makes the robot rock between two items and
     # never close distance -- and wandering costs directness points.
@@ -594,6 +599,42 @@ def model_calls_used(spend: dict[str, Any]) -> int:
     return int(spend.get("calls", 0))
 
 
+def _route_obstacles(navigator, objects, request, selected, state):
+    """Use the same fetch target for obstacle exclusion and approach planning.
+
+    Ordinary hosted-model commands do not set the comparison-only selection.
+    Resolve their target before building obstacles, otherwise the target itself
+    blocks its grasp position and avoidance fights the model's alignment turns.
+    """
+    from .perception import choose
+    target = None
+    if navigator.prepared and not state['holding']:
+        target = selected if selected is not None else choose(request, objects)
+    here = (state['x'], state['y'])
+    obstacles = list(navigator.barrier_obstacles())
+    for i, obj in enumerate(objects):
+        if target is not None and obj.colour == target.colour and math.dist(obj.world, target.world) < .45:
+            continue
+        if state['holding'] and math.dist(obj.world, here) < .8:
+            continue
+        obstacles.append({'label': f'visual_{i}', 'pos': obj.world,
+                          '_radius': max(.12, obj.width / 2), 'height': obj.height})
+    return target, obstacles
+
+
+class _RouteFailureGuard:
+    """Bound failed replans at one position, regardless of heading oscillation."""
+    def __init__(self):
+        self.origin = None
+        self.failures = 0
+
+    def failed(self, position):
+        if self.origin is None or math.dist(position, self.origin) > .15:
+            self.origin, self.failures = position, 0
+        self.failures += 1
+        return self.failures >= 3
+
+
 def run(command: str, model: str | None, mock: bool, max_steps: int,
         obstacles: bool, run_id: str | None = None,
         provider: str = "mock", rpm: int | None = None,
@@ -638,6 +679,16 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
     patch_xy: tuple[float, float] | None = None
     memory: dict[str, Any] = {}
     navigator = ReturnNavigator()
+    from .perception import WorldModel, detect, parse_request, choose
+    measured_world = WorldModel()
+    request = parse_request(command)
+    comparison_turns = 0
+    chosen_comparison = None
+    selection_turns = 0
+    selection_checked = False
+    selection_issue = None
+    detour_route = []
+    route_failures = _RouteFailureGuard()
     # The copilot does the metric geometry the model is poor at -- which object
     # matches, where to stand, how to get there without a collision -- entirely
     # from the camera frames. It is off on the mock path, which has its own.
@@ -653,33 +704,87 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
     # budget on steps that were never charged for, and runs died metres from the
     # platform having made only fourteen calls out of twenty-four steps.
     step = 0
-    hard_cap = max_steps * 3
-    while (step if mock else model_calls_used(spend)) < max_steps and step < hard_cap:
+    hard_cap = min(60, max_steps)
+    while step < hard_cap:
         step += 1
         jpg: bytes = _get("/look")
         frame_rel = log.save_frame(jpg)
         st = sanitize("state", _get("/state"))
         depth = sanitize("depth", _get("/depth")).get("distance")
+        measured_world.observe(detect(jpg, st))
         if copilot is not None:
             copilot.observe(jpg, st)         # camera + own pose, no extra engine call
-        try:
-            action = None
-            # The copilot owns the CARRY leg only: it follows one planned route
-            # to the platform, so heading and obstacle avoidance are decided
-            # together and nothing can fight it into a spin. The approach is
-            # left to the model (which reads the live frame well) with the
-            # copilot vetting its moves for safety below. carry_action returns
-            # None until the platform has been seen, and the model searches then.
-            if st["holding"] and copilot is not None:
-                action = copilot.carry_action(st)
-            if action is None:
-                action = (navigator.decide(jpg, st) if st["holding"]
-                          else navigator.prepare(jpg, st))
-        except Exception as e:
-            # Navigation is an optimisation. If it misbehaves the model can
-            # still do the whole task from pixels, so degrade rather than die.
-            history.append(f"{step}: return-navigation unavailable ({type(e).__name__})")
-            action = None
+        action = None
+        if not selection_checked:
+            if selection_turns < 8:
+                selection_turns += 1
+                action = ('turn', {'degrees': 45}, 'Scanning the room before choosing: checking all directions for matching objects')
+            else:
+                from .selection import resolve
+                selection = resolve(request, measured_world.objects(st))
+                if selection.target is None:
+                    selection_issue = selection.issue()
+                    finished_reason = 'clarification_required'
+                    log.log_step('finish', {'outcome': selection.message},
+                                 {'accepted': True, 'clarification': selection_issue},
+                                 frame_rel, selection.message, pose=st)
+                    break
+                selection_checked = True
+                chosen_comparison = selection.target
+                comparison_turns = 8
+        if selection_checked:
+            try:
+                action = None
+                # The copilot owns the CARRY leg only: it follows one planned route
+                # to the platform, so heading and obstacle avoidance are decided
+                # together and nothing can fight it into a spin. The approach is
+                # left to the model (which reads the live frame well) with the
+                # copilot vetting its moves for safety below. carry_action returns
+                # None until the platform has been seen, and the model searches then.
+                if st["holding"] and copilot is not None:
+                    action = copilot.carry_action(st)
+                if action is None:
+                    action = (navigator.decide(jpg, st) if st["holding"]
+                              else navigator.prepare(jpg, st))
+            except Exception as e:
+                # Navigation is an optimisation. If it misbehaves the model can
+                # still do the whole task from pixels, so degrade rather than die.
+                history.append(f"{step}: return-navigation unavailable ({type(e).__name__})")
+                action = None
+        if selection_checked and (mock or request.superlative or request.size is not None) and not st['holding'] and navigator.prepared:
+            if navigator.explorations:
+                comparison_turns=8  # the occlusion search already completed a full survey
+            if comparison_turns < 8:
+                comparison_turns += 1
+                action = ('turn', {'degrees':45}, 'surveying all directions before comparing measured physical heights')
+            elif chosen_comparison is None:
+                chosen_comparison = choose(request, measured_world.objects(st))
+            if comparison_turns >= 8 and chosen_comparison is not None:
+                # Refresh the selected object's location from the current camera.
+                # A distant survey estimate must not drive the final grasp.
+                candidates=[o for o in detect(jpg,st) if o.colour==chosen_comparison.colour
+                            and math.dist(o.world,chosen_comparison.world)<1.5]
+                if candidates:
+                    chosen_comparison=min(candidates,key=lambda o:math.dist(o.world,chosen_comparison.world))
+                here=(st['x'],st['y'])
+                angle=navigator._angle(chosen_comparison.world,st)
+                distance=math.dist(here,chosen_comparison.world)
+                if abs(angle)>3:
+                    action=('turn',{'degrees':round(angle,2)},'aligning with the object selected by metric height')
+                elif distance>.4:
+                    action=('move',{'distance':round(min(1.6,distance-.36),3)},'approaching the physically ranked object')
+                else:
+                    action=('pickup',{},'within reach of the physically ranked object')
+        if close_in_pending and action and action[0]=='pickup':
+            close_in_pending=False
+            action=('move',{'distance':.06},'last pickup was out of reach; short measured correction')
+        if detour_route:
+            here=(st['x'],st['y'])
+            while detour_route and math.dist(here,detour_route[0])<.08:
+                detour_route.pop(0)
+            if detour_route:
+                angle=navigator._angle(detour_route[0],st)
+                action=('turn',{'degrees':round(angle,2)},'holding the selected side route') if abs(angle)>3 else ('move',{'distance':round(min(1.6,math.dist(here,detour_route[0])),3)},'following the selected side route')
         log.progress(navigator.phase if action else "Finding requested object", step)
 
         status = (
@@ -841,18 +946,54 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
                 thinking = f"{thinking}  [{note}]" if thinking else note
 
         # ---- copilot: make the move safe against the measured world ----
-        # Copilot-driven legs (approach and carry) are already safe, so they are
-        # not vetted again -- re-running the obstacle logic over its own output
-        # is what let the two halves oscillate.
+        # Model proposals use the copilot; a navigator-owned route keeps its
+        # selected heading and uses the shared barrier check below. Running a
+        # second independent planner over that route fights its next waypoint
+        # and causes alternating turns during marker exploration.
         from_copilot = (copilot is not None
                         and isinstance(thinking, str) and "copilot:" in thinking)
-        if (copilot is not None and tool in ("move", "turn")
+        if (action is None and copilot is not None and tool in ("move", "turn")
                 and not from_copilot):
             safe = copilot.safe_action(tool, args, st, st["holding"], depth)
             if safe is not None:
                 tool, args, note = safe
                 thinking = f"{thinking}  [{note}]" if thinking else note
 
+        if tool == 'move' and float(args.get('distance',0))>0 and navigator.barrier_points:
+            from scripts import planner
+            here=(st['x'],st['y']); h=math.radians(st['heading'])
+            dest=(here[0]+math.cos(h)*args['distance'],here[1]-math.sin(h)*args['distance'])
+            target, barriers = _route_obstacles(
+                navigator, measured_world.objects(st), request, chosen_comparison, st)
+            if planner.blockers(here,dest,barriers):
+                if target is not None:
+                    dist=math.dist(here,target.world) or 1
+                    dest=(target.world[0]+(here[0]-target.world[0])*.4/dist,
+                          target.world[1]+(here[1]-target.world[1])*.4/dist)
+                if not navigator.prepared and navigator.exploration_target is not None:
+                    dest=navigator.exploration_route[-1] if navigator.exploration_route else navigator.exploration_target
+                path=planner.plan(here,dest,barriers)
+                if path:
+                    detour_route=path
+                    if not navigator.prepared:
+                        navigator.exploration_route=[]
+                        navigator.exploration_target=dest
+                    angle=navigator._angle(path[0],st)
+                    tool,args=('turn',{'degrees':round(angle,2)}) if abs(angle)>3 else ('move',{'distance':round(min(1.6,math.dist(here,path[0])),3)})
+                else:
+                    detour_route=[]
+                    if route_failures.failed(here):
+                        finished_reason = 'route_unverified'
+                        log.log_step('finish', {'outcome': 'Cannot verify a safe route from the camera; stopped after repeated failed replans.'},
+                                     {'accepted': True}, frame_rel,
+                                     'Stopped repeated avoidance turns without positional progress. This does not prove full enclosure.', pose=st)
+                        break
+                    if not navigator.prepared:
+                        navigator.exploration_route=[]
+                        navigator.exploration_target=None
+                        navigator.survey_turns=0
+                    tool,args='turn',{'degrees':45}
+                thinking='camera-derived barrier blocks direct travel; checking the alternate approach'
         # ---- execute ----
         if tool == "finish":
             log.log_step(tool, args, {"accepted": True}, frame_rel, thinking, pose=st)
@@ -885,16 +1026,19 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
         seen_v = args.pop("patch_at_row", None)
         if seen_u is not None:
             try:
-                bearing = (st["heading"] + (float(seen_u) - 320.0) / 640.0 * 90.0) % 360.0
+                bearing = (st["heading"] + math.degrees(math.atan((float(seen_u) - 320.0) / 320.0))) % 360.0
                 patch_bearing = bearing
                 if seen_v is not None:
                     # Bearing plus range fixes a POSITION. Bearing alone told the
                     # agent which way to drive but never when to stop, so it
                     # sailed straight over the platform without releasing.
-                    rng = _range_from_row(int(float(seen_v)))
-                    if 0.2 < rng < 12.0:
-                        a = math.radians(bearing)
-                        patch_xy = (st["x"] + rng * math.cos(a), st["y"] - rng * math.sin(a))
+                    from .navigation import ground_point
+                    point=ground_point(float(seen_u),float(seen_v))
+                    if point is not None and .2 < point[0] < 12:
+                        forward,right=point
+                        a=math.radians(st['heading'])
+                        patch_xy=(st['x']+forward*math.cos(a)-right*math.sin(a),
+                                  st['y']-forward*math.sin(a)-right*math.cos(a))
             except (TypeError, ValueError):
                 pass
 
@@ -913,6 +1057,7 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
     total = _commit_spend(spend["usd"]) if not mock else _read_spend()
     log.finish(finished_reason, {
         "engine_outcome": outcome,
+        "clarification": selection_issue,
         "provider": "mock" if mock else vlm.name,
         "model": "mock" if mock else vlm.model,
         "api_calls": spend["calls"],
@@ -925,7 +1070,7 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
     log.progress("Delivery verified" if outcome.get("result") == "pass" else "Run ended without delivery", log.step)
     res = {"run_dir": str(run_dir), "steps": log.step,
            "reason": "budget_exceeded" if budget_stop else finished_reason,
-           "engine_outcome": outcome, "cost_usd": round(spend["usd"], 4),
+           "clarification": selection_issue, "engine_outcome": outcome, "cost_usd": round(spend["usd"], 4),
            "cumulative_usd": total,
            "provider": "mock" if mock else vlm.name,
            "model": "mock" if mock else vlm.model}

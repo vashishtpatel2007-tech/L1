@@ -1,21 +1,11 @@
 #!/usr/bin/env python3
-"""Obstacle-aware path planning for the oracle baseline.
+"""Collision-inflated 10 cm grid A* and line-of-sight path simplification.
 
-Driving straight at a target fails in two ways once objects are not neatly
-spread out, and both showed up in a 60-attempt sweep over random scenes:
-
-  * the straight line clips another object, so the robot collides on approach
-  * the robot arrives at a standoff where some OTHER object is nearer, and
-    `/pickup` attaches the nearest thing -- delivering the wrong object while
-    still reporting success
-
-This module solves both geometrically. It is used only by the oracle, which is
-the optimal baseline we score the model against; the agent never sees it and it
-reads no engine data the agent is denied, because the oracle is not the agent.
-
-The algorithm is a tangent-graph detour: if a segment passes too close to a
-circular obstacle, route via the two tangent-side waypoints and keep the shorter
-option, recursing until the path is clear or the depth budget runs out.
+The oracle supplies private geometry; the agent supplies only its own visual
+estimates to these pure geometry functions. No engine data is read here.
+Paths are shortest on the discretized graph before smoothing, not a proof of
+continuous global optimality. An unverified route is never replaced by a direct
+hop through a blocker.
 """
 from __future__ import annotations
 
@@ -208,7 +198,7 @@ def astar(grid, start, goal) -> list[tuple[float, float]] | None:
                 continue
             if di and dj and (grid[cur[0] + di][cur[1]] or grid[cur[0]][cur[1] + dj]):
                 continue                     # no cutting a diagonal corner
-            step = 1.4142 if di and dj else 1.0
+            step = math.sqrt(2) if di and dj else 1.0
             ng = g + step
             if ng < best.get((ni, nj), 1e18):
                 best[(ni, nj)] = ng
@@ -253,46 +243,48 @@ def plan(start, goal, obstacles, skip=(), depth: int = 4) -> list[tuple[float, f
 
     Returns the goal alone when the straight line is already clear.
     """
-    hit = blockers(start, goal, obstacles, skip)
-    if not hit or depth <= 0:
+    # Never turn an unreachable goal into an unchecked straight-line fallback.
+    # Grid A* is shortest on its discretized graph, not a claim of a globally
+    # shortest continuous path. Smoothing is validated against analytic circles.
+    if max(map(abs, (*start, *goal))) > ROOM - ROBOT_RADIUS - 0.02:
+        return []
+    if blockers(goal, goal, obstacles, skip):
+        return []
+    if not blockers(start, goal, obstacles, skip):
         return [goal]
+    grid = build_grid(obstacles, skip)
+    raw = astar(grid, start, goal)
+    if not raw:
+        return []
+    route = _smooth(grid, [tuple(start)] + raw, goal, obstacles, skip)
+    points = [tuple(start)] + route
+    if any(blockers(a, b, obstacles, skip) for a, b in zip(points, points[1:])):
+        return []
+    return route
 
-    # A single perpendicular hop clears one object but cannot get around an
-    # extended barrier: a 2.6 m wall needs a 1.3 m lateral detour, not 0.38 m.
-    # With a barrier in the room that cost 2.67 collisions per attempt and a
-    # 69% delivery rate. Plan properly on a grid and fall back to the hop only
-    # if no route exists at all.
-    try:
-        grid = build_grid(obstacles, skip)
-        raw = astar(grid, start, goal)
-        if raw:
-            return _smooth(grid, raw, goal, obstacles, skip)
-    except Exception:
-        pass
 
-    o = hit[0]
-    cx, cy = o["pos"]
-    need = ROBOT_RADIUS + _obj_radius(o) + CLEARANCE + 0.10
+def delivery_route(start, goal, obstacles, standoff=0.60):
+    """Try all approach sides; choose the shortest validated sampled route.
 
-    # Step perpendicular to the path, on whichever side is shorter.
-    dx, dy = goal[0] - start[0], goal[1] - start[1]
-    n = math.hypot(dx, dy) or 1.0
-    px, py = -dy / n, dx / n
-
-    best, best_len = None, float("inf")
-    for side in (+1, -1):
-        wp = (cx + px * need * side, cy + py * need * side)
-        if max(abs(wp[0]), abs(wp[1])) > 3.6:          # would clip a wall
+    None means no route in the measured map, NOT proof of a 360 enclosure.
+    Return (waypoints, approach_pose), retaining the release heading separately.
+    """
+    best, length = None, float('inf')
+    preferred = math.atan2(start[1]-goal[1], start[0]-goal[0])
+    for i in range(36):
+        angle = preferred + 2*math.pi*i/36
+        stop = (goal[0]+standoff*math.cos(angle), goal[1]+standoff*math.sin(angle))
+        # The held object has to reach the zone, too; do not release through a wall.
+        if blockers(stop, goal, obstacles):
             continue
-        if blockers(start, wp, obstacles, skip):
+        route = plan(start, stop, obstacles)
+        if not route:
             continue
-        length = math.dist(start, wp) + math.dist(wp, goal)
-        if length < best_len:
-            best, best_len = wp, length
-
-    if best is None:
-        return [goal]
-    return [best] + plan(best, goal, obstacles, skip, depth - 1)
+        pts = [start] + route
+        cost = sum(math.dist(a,b) for a,b in zip(pts,pts[1:]))
+        if cost < length:
+            best, length = (route,stop), cost
+    return best
 
 
 PICKUP_REACH = 0.5          # the engine's grasp radius

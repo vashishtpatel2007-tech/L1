@@ -31,22 +31,13 @@ def _fit_frames(frames: list[np.ndarray], fps: int) -> tuple[list[np.ndarray], i
     if n == 0:
         raise ValueError("no frames captured -- was record_video enabled?")
 
-    # Prefer changing fps; only resample if fps would leave a sane range.
-    lo_fps, hi_fps = 12, 40
-    for d in (15.0, 14.0, 16.0, 13.0, 17.0, 12.0, 18.0):
-        f = round(n / d)
-        if lo_fps <= f <= hi_fps:
-            return frames, int(f)
-
-    # Too many frames for the window: subsample evenly.
-    if n / hi_fps > SAFE_MAX:
-        keep = int(SAFE_MAX * hi_fps)
-        idx = np.linspace(0, n - 1, keep).astype(int)
-        return [frames[i] for i in idx], hi_fps
-    # Too few: hold each frame longer by duplicating.
-    keep = int(SAFE_MIN * lo_fps)
-    idx = np.linspace(0, n - 1, keep).astype(int)
-    return [frames[i] for i in idx], lo_fps
+    # Fixed output cadence. Preserve timing inside the accepted duration window;
+    # outside it, resample explicitly (time compression/extension, not FPS drift).
+    fps = 30
+    duration = min(SAFE_MAX, max(SAFE_MIN, n / fps))
+    keep = round(duration * fps)
+    idx = np.linspace(0, n - 1, keep).round().astype(int)
+    return [frames[i] for i in idx], fps
 
 
 def write_clip(frames: list[np.ndarray], command: str, out_path: str | Path) -> dict:
@@ -63,7 +54,13 @@ def write_clip(frames: list[np.ndarray], command: str, out_path: str | Path) -> 
 
     overlay_frames = int(OVERLAY_SECONDS * fps)
     for i, f in enumerate(sel):
-        img = cv2.resize(f, (OUT_W, OUT_H), interpolation=cv2.INTER_LINEAR)
+        # Preserve calibrated camera geometry: letterbox 4:3 into 720p.
+        scale=min(OUT_W/f.shape[1],OUT_H/f.shape[0])
+        width,height=round(f.shape[1]*scale),round(f.shape[0]*scale)
+        resized=cv2.resize(f,(width,height),interpolation=cv2.INTER_LINEAR)
+        img=np.zeros((OUT_H,OUT_W,3),dtype=np.uint8)
+        left,top=(OUT_W-width)//2,(OUT_H-height)//2
+        img[top:top+height,left:left+width]=resized
         img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
         if i < overlay_frames:
             # Command text only. No team name, no logo, no code.

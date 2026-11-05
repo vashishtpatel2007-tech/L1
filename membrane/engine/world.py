@@ -29,7 +29,7 @@ IMG_W, IMG_H = 640, 480  # brief: JPEG 640x480
 ROBOT_RADIUS = 0.14
 PICKUP_REACH = 0.5       # brief: reach 0.5 m
 PICKUP_CONE_DEG = 30.0   # brief: within +/-30 deg of heading
-DROP_ZONE_HALF = 0.55
+DROP_ZONE_HALF = 0.75
 
 #: Vertical FOV derived from the required horizontal FOV at 4:3.
 #: tan(h/2) = aspect * tan(v/2)
@@ -100,27 +100,20 @@ class Scene:
 
 
 def default_scene(with_obstacles: bool = False) -> Scene:
-    """Fixed, deterministic scene.
-
-    Colour sharing : red {sphere, box}, blue {box, cylinder}
-    Shape sharing  : box {red, blue}
-    Height ordering: every height is DISTINCT (0.26 < 0.30 < 0.34 < 0.40 < 0.50)
-    so "tallest" and "shortest" each resolve to exactly one object. With ties,
-    a judge's superlative command becomes a coin flip.
-    The drop zone is green and no object is green, so "the green square" is
-    unambiguous for the multi-view stretch goal.
+    """User demo: two equal cubes, two spheres and one tall cone.
+    Cube heights intentionally tie; tallest and shortest remain unique.
     """
     objects = [
         SceneObject("obj0", "sphere",   "red",    (0.85, 0.12, 0.12, 1), (2.6, 1.7),
                     (0.15,), 0.30, "red sphere"),
         SceneObject("obj1", "box",      "red",    (0.85, 0.12, 0.12, 1), (-2.2, 2.3),
-                    (0.17, 0.17, 0.17), 0.34, "red cube"),
+                    (0.16, 0.16, 0.16), 0.32, "red cube"),
         SceneObject("obj2", "box",      "blue",   (0.15, 0.35, 0.90, 1), (2.9, -1.9),
-                    (0.13, 0.13, 0.13), 0.26, "blue cube"),
-        SceneObject("obj3", "cylinder", "blue",   (0.15, 0.35, 0.90, 1), (-2.8, -1.4),
-                    (0.14, 0.20), 0.40, "blue cylinder"),
+                    (0.16, 0.16, 0.16), 0.32, "blue cube"),
+        SceneObject("obj3", "sphere", "blue",   (0.15, 0.35, 0.90, 1), (-2.8, -1.4),
+                    (0.12,), 0.24, "blue sphere"),
         SceneObject("obj4", "cone",     "yellow", (0.95, 0.80, 0.10, 1), (0.4, 3.0),
-                    (0.20, 0.50), 0.50, "yellow cone"),
+                    (0.20, 0.72), 0.72, "yellow cone"),
     ]
     obstacles = [(0.0, 1.1, 1.3, 0.12)] if with_obstacles else []
     return Scene(objects=objects, drop_zone=(0.0, -2.8), robot_start=(0.0, 0.0, 0.0), obstacles=obstacles)
@@ -188,6 +181,11 @@ def random_scene(seed: int | None = None, n_objects: int = 5,
         while height in used_heights:
             height = round(height + 0.03, 2)
         used_heights.add(height)
+        # Keep the actual collision/render geometry consistent with the ranking.
+        if kind == 'sphere': size = (height/2,)
+        elif kind == 'box': size = (size[0],size[1],height/2)
+        elif kind == 'cylinder': size = (size[0],height/2)
+        else: size = (size[0],height)
         chosen.append((kind, size, height, word))
 
     placed: list[tuple[float, float]] = []
@@ -246,15 +244,14 @@ def build_xml(scene: Scene) -> str:
     xyaxes = " ".join(f"{v:.5f}" for v in (*cam_x_axis, *cam_y_axis))
 
     body_xml, asset_xml = [], []
-    if any(o.kind == "cone" for o in scene.objects):
-        cone = next(o for o in scene.objects if o.kind == "cone")
+    for cone in (o for o in scene.objects if o.kind == "cone"):
         asset_xml.append(
-            f'<mesh name="cone_mesh" vertex="{_cone_vertices(cone.size[0], cone.size[1])}"/>'
+            f'<mesh name="cone_mesh_{cone.name}" vertex="{_cone_vertices(cone.size[0], cone.size[1])}"/>'
         )
 
     for o in scene.objects:
         if o.kind == "cone":
-            geom = f'<geom type="mesh" mesh="cone_mesh" rgba="{" ".join(map(str, o.rgba))}" mass="0.5"/>'
+            geom = f'<geom type="mesh" mesh="cone_mesh_{o.name}" rgba="{" ".join(map(str, o.rgba))}" mass="0.5"/>'
             z = o.size[1] / 2
         elif o.kind == "sphere":
             geom = f'<geom type="sphere" size="{o.size[0]}" rgba="{" ".join(map(str, o.rgba))}" mass="0.5"/>'

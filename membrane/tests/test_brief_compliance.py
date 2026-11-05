@@ -28,11 +28,15 @@ def test_at_least_two_objects_share_a_shape():
     assert max(counts.values()) >= 2, f"no shared shape: {counts}"
 
 
-def test_all_heights_are_distinct_so_superlatives_resolve():
-    """With tied heights, "bring the tallest/shortest" becomes a coin flip
-    against whatever the judge meant."""
-    heights = [o.height for o in default_scene().objects]
-    assert len(set(heights)) == len(heights), f"tied heights: {sorted(heights)}"
+def test_requested_demo_has_equal_cubes_and_unique_extremes():
+    objects=default_scene().objects
+    cubes=[o for o in objects if o.kind=='box']
+    assert len(cubes)==2 and cubes[0].size==cubes[1].size
+    assert cubes[0].colour != cubes[1].colour
+    assert sum(o.kind=='sphere' for o in objects)==2
+    assert sum(o.kind=='cone' for o in objects)==1
+    heights=[o.height for o in objects]
+    assert heights.count(min(heights))==heights.count(max(heights))==1
 
 
 def test_no_object_is_the_drop_zone_colour():

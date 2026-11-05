@@ -63,6 +63,10 @@ class Copilot:
     _carry_route: list | None = None
     _carry_goal: tuple[float, float] | None = None
     _replan_carry: bool = False
+    _carry_stop: tuple | None = None
+    barriers: list = field(default_factory=list)
+    _observed_pose: dict | None = None
+    _held_target: Detection | None = None
 
     def _note_pose(self, pose: dict) -> bool:
         """Track whether the robot is actually moving. Returns True if it has
@@ -87,16 +91,37 @@ class Copilot:
         if tool == "pickup":
             if result.get("success"):
                 self.grasp_fails = 0
+                if self._observed_pose is not None:
+                    self._held_target = self.choose_target(self._observed_pose)
+                    if self._held_target is not None:
+                        held = self._held_target
+                        # A successful grasp removes this object from the floor.
+                        # Its old track must not block the robot's starting cell.
+                        self.world.tracks = [t for t in self.world.tracks
+                            if not (t['colour'] == held.colour and
+                                    math.dist(t['world'], held.world) <= self.world.merge_radius)]
             else:
                 self.grasp_fails += 1
+        if tool == 'drop' and result.get('success'):
+            self._held_target = None
         if isinstance(result, dict) and result.get("collided"):
             self._replan_carry = True       # the planned route hit something
 
     # ---------------------------------------------------------------- see --
     def observe(self, jpg: bytes, pose: dict) -> None:
         """Fold this frame into the measured world. Camera pixels only."""
+        self._observed_pose = dict(pose)
+        from .barriers import observe_barriers
+        for point in observe_barriers(jpg,pose):
+            if all(math.dist(point,p)>.13 for p in self.barriers):
+                self.barriers.append(point)
         try:
-            self.world.observe(perception.detect(jpg, pose))
+            detections = perception.detect(jpg, pose)
+            if pose.get('holding') and self._held_target is not None:
+                here = (pose['x'], pose['y'])
+                detections = [d for d in detections if not
+                              (d.colour == self._held_target.colour and math.dist(d.world, here) < .8)]
+            self.world.observe(detections)
         except Exception:
             pass                        # perception is an aid; never fatal
         try:
@@ -185,10 +210,12 @@ class Copilot:
         stop = (gx - (gx - here[0]) / gd * self.DROP_STANDOFF,
                 gy - (gy - here[1]) / gd * self.DROP_STANDOFF)
 
-        # Arrived.
-        if math.dist(here, goal) <= self.DROP_STANDOFF + 0.12:
-            self._carry_route = None
-            return ("drop", {}, "copilot: at the platform standoff; releasing")
+        if self._carry_stop is not None and math.dist(here,self._carry_stop)<.08:
+            angle = ((math.degrees(math.atan2(-(gy-here[1]),gx-here[0]))-pose['heading']+180)%360)-180
+            if abs(angle)>2:
+                return 'turn', {'degrees':round(angle,2)}, 'copilot: align release toward platform'
+            self._carry_route=None
+            return 'drop', {}, 'copilot: clear release pose reached'
 
         # (Re)plan when there is no route, the goal moved, we were bumped, or we
         # have stalled hunting a heading.
@@ -201,9 +228,15 @@ class Copilot:
             self._turns_without_moving = 0
             obstacles = self._obstacles(pose, exclude=None)
             try:
-                route = planner.plan(here, stop, obstacles)
+                candidate = planner.delivery_route(here, goal, obstacles)
+                route = candidate[0] if candidate else None
+                if candidate:
+                    self._carry_stop = candidate[1]
             except Exception:
                 route = None
+            if not route:
+                self._carry_route = None
+                return 'turn', {'degrees':45}, 'copilot: no verified route; inspect another side'
             # Drop the first point if it is essentially where we stand.
             route = [w for w in (route or [stop]) if math.dist(here, w) > 0.12]
             self._carry_route = route or [stop]
@@ -220,7 +253,7 @@ class Copilot:
             return ("turn", {"degrees": round(bearing, 1)},
                     "copilot: turning onto the planned route to the platform")
         step = min(1.0, math.dist(here, aim))
-        return ("move", {"distance": round(max(0.2, step), 2)},
+        return ("move", {"distance": round(step, 3)},
                 "copilot: carrying along the planned direct route, 0.5 m clear")
 
     # ------------------------------------------------------------- report --
@@ -268,7 +301,8 @@ class Copilot:
         width. The target is left out when approaching so the planner routes TO
         it rather than around it.
         """
-        out = []
+        out = [dict(label=f'visual_barrier_{i}',pos=p,kind='barrier',_radius=.12)
+               for i,p in enumerate(self.barriers)]
         for i, d in enumerate(self._objects(pose)):
             if exclude is not None and math.dist(d.world, exclude) < 0.25:
                 continue
@@ -383,7 +417,7 @@ class Copilot:
                             "copilot: an obstacle is in the straight path; turning "
                             "onto a clear detour that keeps 0.5 m clearance")
                 step = min(distance, math.dist(here, (wx, wy)), clear_ahead)
-                return ("move", {"distance": round(max(0.2, step), 2)},
+                return ("move", {"distance": round(step, 3)},
                         "copilot: edging along a detour around an obstacle, 0.5 m clear")
             # No route at all: do not drive into the blockage. Edge forward only
             # as far as is provably clear, otherwise turn to find a way.

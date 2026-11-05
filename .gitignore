@@ -18,3 +18,7 @@ runs/*.mp4
 runs/spend.json
 *.log
 .pytest_cache/
+
+# Local Godot runtime and import cache
+membrane/.tools/
+membrane/godot/.godot/

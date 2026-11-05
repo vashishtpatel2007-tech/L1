@@ -1,0 +1,145 @@
+{
+  "source": "Camera-derived estimates replayed from interrupted run ui911137f102f7, step 10. No private scene geometry.",
+  "pose": {
+    "state": "GoToObject",
+    "x": 2.05,
+    "y": 1.234,
+    "heading": 314.9,
+    "holding": false,
+    "retry_count": 0
+  },
+  "objects": [
+    {
+      "colour": "red",
+      "shape": "sphere",
+      "height": 0.309,
+      "width": 0.349,
+      "distance": 0.704,
+      "bearing": 3.98,
+      "world": [
+        2.5801736537387394,
+        1.6968389403355784
+      ],
+      "pixels": 24129,
+      "box": [
+        270,
+        293,
+        170,
+        185
+      ],
+      "height_valid": true
+    },
+    {
+      "colour": "blue",
+      "shape": "box",
+      "height": 0.318,
+      "width": 0.518,
+      "distance": 3.117,
+      "bearing": 122.47,
+      "world": [
+        2.73160687680966,
+        -1.8077263218567048
+      ],
+      "pixels": 1736,
+      "box": [
+        224,
+        199,
+        51,
+        39
+      ],
+      "height_valid": true
+    }
+  ],
+  "barriers": [
+    {
+      "label": "visual_barrier_0",
+      "pos": [
+        1.1138279414939218,
+        1.0001746788111345
+      ],
+      "kind": "barrier",
+      "_radius": 0.08
+    },
+    {
+      "label": "visual_barrier_1",
+      "pos": [
+        1.258356006258145,
+        1.0123777477926952
+      ],
+      "kind": "barrier",
+      "_radius": 0.08
+    },
+    {
+      "label": "visual_barrier_2",
+      "pos": [
+        0.25213895160147326,
+        0.9963387758588185
+      ],
+      "kind": "barrier",
+      "_radius": 0.08
+    },
+    {
+      "label": "visual_barrier_3",
+      "pos": [
+        0.3928545358302287,
+        0.9992033812542296
+      ],
+      "kind": "barrier",
+      "_radius": 0.08
+    },
+    {
+      "label": "visual_barrier_4",
+      "pos": [
+        0.5388470341009993,
+        1.0025806939508741
+      ],
+      "kind": "barrier",
+      "_radius": 0.08
+    },
+    {
+      "label": "visual_barrier_5",
+      "pos": [
+        0.689485421758863,
+        1.0024859395148689
+      ],
+      "kind": "barrier",
+      "_radius": 0.08
+    },
+    {
+      "label": "visual_barrier_6",
+      "pos": [
+        0.8331079517118071,
+        1.004075286223102
+      ],
+      "kind": "barrier",
+      "_radius": 0.08
+    },
+    {
+      "label": "visual_barrier_7",
+      "pos": [
+        0.9778528471392769,
+        1.0032294095153276
+      ],
+      "kind": "barrier",
+      "_radius": 0.08
+    },
+    {
+      "label": "visual_barrier_8",
+      "pos": [
+        0.5788744704777196,
+        1.1452479991398765
+      ],
+      "kind": "barrier",
+      "_radius": 0.08
+    },
+    {
+      "label": "visual_barrier_9",
+      "pos": [
+        0.724176326216549,
+        1.1340867835686688
+      ],
+      "kind": "barrier",
+      "_radius": 0.08
+    }
+  ]
+}

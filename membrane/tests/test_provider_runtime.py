@@ -60,7 +60,7 @@ class ProviderRuntimeTests(unittest.TestCase):
     def test_carry_survey_acquires_marker_then_navigates(self):
         nav = ReturnNavigator()
         pose = {"holding": True, "x": 0.0, "y": 0.0, "heading": 0.0, "state": "Carry"}
-        with patch("agent.navigation.marker_from_image", side_effect=[None, (1.2, 0.0)]):
+        with patch("agent.navigation.marker_from_image", side_effect=[None, (1.2, 0.0)]), patch("agent.barriers.observe_barriers", return_value=[]):
             first = nav.decide(b"jpg", pose)
             self.assertEqual(first[0], "turn")
             second = nav.decide(b"jpg", pose)

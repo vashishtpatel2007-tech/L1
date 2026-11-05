@@ -51,8 +51,9 @@ BLOCK_SECONDS = 2.0
 # an empty room. 0.70 m keeps the largest object (r=0.25) well clear while still
 # reading unmistakably as "the robot is holding something".
 CARRY_FWD = 0.60
-CARRY_CLEAR = 0.06        # keep the carried object's base this far above the floor
-VIDEO_EVERY = 8           # capture a POV video frame every N physics steps (~30 fps)
+CARRY_CLEAR = 0.10        # keep the carried object's base this far above the floor
+VIDEO_FPS = 30
+VIDEO_EVERY = 8  # legacy import compatibility; scheduling uses simulated time
 
 # Wall-clock pacing. The engine always advances simulated time correctly -- a
 # 1 m move is integrated as exactly 1 m / 1 m/s = 1 s of simulated time -- but
@@ -174,7 +175,13 @@ class Sim:
             return
         adr = self.obj_qadr[self.holding]
         p = np.array([self.x, self.y, 0.0]) + self._forward() * CARRY_FWD
-        self.data.qpos[adr : adr + 3] = [p[0], p[1], self._carry_height(self.holding)]
+        target=np.array([p[0],p[1],self._carry_height(self.holding)])
+        if getattr(self, '_grasp_from', None) is not None:
+            t=min(1.0,max(0.0,(self.sim_clock-self._grasp_started)/.30))
+            t=t*t*(3-2*t)
+            target=self._grasp_from*(1-t)+target*t
+            if t>=1.0:self._grasp_from=None
+        self.data.qpos[adr : adr + 3] = target
         self.data.qpos[adr + 3 : adr + 7] = [1.0, 0.0, 0.0, 0.0]
         jid = self.model.body_jntadr[self.obj_bids[self.holding]]
         vadr = self.model.jnt_dofadr[jid]
@@ -185,8 +192,10 @@ class Sim:
         self._hold_object_in_place()
         mujoco.mj_step(self.model, self.data)
         self._step_counter += 1
+        previous_frame = int(self.sim_clock * VIDEO_FPS + 1e-9)
         self.sim_clock += float(self.model.opt.timestep)
-        if self._step_counter % VIDEO_EVERY == 0:
+        frame_due = int(self.sim_clock * VIDEO_FPS + 1e-9) > previous_frame
+        if frame_due:
             last = self.path_trace[-1] if self.path_trace else None
             held = self.holding is not None
             if (last is None or held != last[2]
@@ -196,9 +205,11 @@ class Sim:
                 # unattended console growing without bound.
                 if len(self.path_trace) > 4000:
                     del self.path_trace[:1000]
-        if self.record_video and self._step_counter % VIDEO_EVERY == 0:
-            self.video_frames.append(self._render())
-        if self.realtime > 0.0 and self._step_counter % VIDEO_EVERY == 0:
+        if frame_due and (self.record_video or getattr(self, "live_render", False)):
+            frame = self._render()
+            if self.record_video:
+                self.video_frames.append(frame)
+        if self.realtime > 0.0 and frame_due:
             self._pace()
 
     def _record_physics(self, command: str, *, requested: float, achieved: float,
@@ -407,15 +418,29 @@ class Sim:
         self._pace_reset()
         clock_at_start = self.sim_clock
         h0 = self.heading
+        collided = False
         for _ in range(n_steps):
+            previous_heading = self.heading
             self.heading = (self.heading + inc) % 360.0
             self._physics_step()
-        if self.state == "Blocked":
+            if self.holding and self._collision():
+                self.heading = previous_heading
+                self._apply_pose()
+                self._hold_object_in_place()
+                mujoco.mj_forward(self.model,self.data)
+                collided = True
+                self.retries += 1
+                self.state = 'Blocked'
+                if self.retries >= MAX_RETRIES:
+                    self.state = 'Done'
+                    self.outcome.result = 'fail_collision'
+                break
+        if self.state == "Blocked" and not collided:
             self.state = "Carry" if self.holding else "GoToObject"
         self._record_physics(
             "turn", requested=degrees, achieved=((self.heading - h0 + 540) % 360) - 180,
             unit="deg", rate=TURN_SPEED, n_steps=n_steps,
-            elapsed=self.sim_clock - clock_at_start, collided=False)
+            elapsed=self.sim_clock - clock_at_start, collided=collided)
         return {"heading": round(self.heading, 2), "state": self.state}
 
     def pickup(self) -> dict[str, Any]:
@@ -439,9 +464,13 @@ class Sim:
         if best is None:
             self.state = "GoToObject"
             return {"success": False, "reason": "nothing_in_reach", "state": self.state}
+        self._grasp_from=self.data.qpos[self.obj_qadr[best]:self.obj_qadr[best]+3].copy()
+        self._grasp_started=self.sim_clock
         self.holding = best
         self.state = "Carry"
-        self._physics_step()
+        self._pace_reset()
+        for _ in range(round(.30/self.model.opt.timestep)+1):
+            self._physics_step()
         return {"success": True, "state": self.state}
 
     def drop(self) -> dict[str, Any]:
@@ -453,7 +482,7 @@ class Sim:
         name = self.holding
         adr = self.obj_qadr[name]
         p = np.array([self.x, self.y, 0.0]) + self._forward() * CARRY_FWD
-        self.data.qpos[adr : adr + 3] = [p[0], p[1], 0.30]
+        self.data.qpos[adr : adr + 3] = [p[0], p[1], max(float(self.data.qpos[adr+2]), self._carry_height(name))]
         self.holding = None
         self.state = "Drop"
         self._settle(220)

@@ -30,6 +30,7 @@ import re
 from dataclasses import dataclass, field
 
 import numpy as np
+import cv2
 from PIL import Image
 
 IMG_W, IMG_H = 640, 480
@@ -62,6 +63,8 @@ SHAPE_WORDS = {
 SUPERLATIVES: dict[str, tuple[str, bool]] = {
     "tallest": ("height", True), "highest": ("height", True),
     "shortest": ("height", False), "lowest": ("height", False),
+    "shorted": ("height", False), "shorter": ("height", False),
+    "taller": ("height", True),
     "largest": ("volume", True), "biggest": ("volume", True),
     "bigger": ("volume", True), "big": ("volume", True),
     "smallest": ("volume", False), "tiniest": ("volume", False),
@@ -117,12 +120,12 @@ def height_at(v_top: float, forward: float) -> float:
     top row with that distance held, which is what makes a height measurement
     possible from one frame.
 
-    This is why apparent size never fools a size comparison. A tall object far
+    This removes the ideal pinhole distance dependence of a size comparison. A tall object far
     away and a short object close up can cover the same number of pixels, but
     once the distance is divided back out, both come back in metres at their
     true size. Every ranking -- tallest, shortest, largest, smallest -- is done
-    on these metres, never on pixel extent, so foreshortening cannot cause a
-    wrong pick or a false placement.
+    on these metres, never on pixel extent, but occlusion, pixel quantization and imperfect silhouettes still introduce
+    uncertainty; clipped measurements are excluded from rankings.
     """
     q = (v_top - IMG_H / 2) / F_PX
     sin, cos = math.sin(math.radians(CAM_TILT_DEG)), math.cos(math.radians(CAM_TILT_DEG))
@@ -196,7 +199,7 @@ def _label_colours(rgb: np.ndarray) -> dict[str, np.ndarray]:
     with colour in it, whatever colour that turns out to be.
     """
     hue, sat, val = _hue_deg(rgb)
-    lit = (val > 30) & (sat > 0.20)
+    lit = (val > 30) & (sat > 0.40)
 
     names = list(COLOUR_HUES)
     best_i = np.zeros(hue.shape, dtype=np.int8)
@@ -208,9 +211,14 @@ def _label_colours(rgb: np.ndarray) -> dict[str, np.ndarray]:
         best_d = np.where(closer, d, best_d)
         best_i = np.where(closer, i, best_i)
 
-    # 22 degrees is half the narrowest gap in the palette (orange to yellow),
-    # so anything further from every anchor than this is not one of them.
-    return {name: lit & (best_i == i) & (best_d < 22.0)
+    # Magenta rim lighting shifts purple surfaces toward 300 degrees in Godot.
+    # Its nearest competing anchor is much farther away than orange/yellow;
+    # allow that measured shift while still assigning each pixel only once.
+    # The room's dim purple wall panels must not join a purple object's apex
+    # into one wall-sized component. Fetchable purple surfaces are brighter
+    # in the calibrated room lighting; retain highlights for full silhouettes.
+    return {name: lit & ((val > 60) if name == 'purple' else True)
+            & (best_i == i) & (best_d < (36.0 if name == 'purple' else 22.0))
             for i, name in enumerate(names)}
 
 
@@ -289,13 +297,32 @@ def detect(jpg: bytes, pose: dict) -> list[Detection]:
     heading = math.radians(pose["heading"])
     out: list[Detection] = []
 
+    # Visible gold forearms are attached to the lower image edges. Join their
+    # highlight bands before colour segmentation so isolated fingertip pixels
+    # cannot masquerade as a small distant fetch object.
+    warm = ((rgb[:,:,0]>150)&(rgb[:,:,1]>100)&(rgb[:,:,2]<rgb[:,:,0]*.9)).astype(np.uint8)
+    warm = cv2.morphologyEx(warm,cv2.MORPH_CLOSE,np.ones((21,21),np.uint8))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(warm)
+    self_mask = np.zeros(warm.shape,np.uint8)
+    for i in range(1,n):
+        x,y,w,h,area = stats[i]
+        if area>200 and y+h>IMG_H*.6 and (x<2 or x+w>=IMG_W-2):
+            self_mask[labels==i]=1
+    self_mask = cv2.dilate(self_mask,np.ones((17,17),np.uint8)).astype(bool)
+
     for colour, mask in _label_colours(rgb).items():
         if not mask.any():
             continue
         for blob in _components(mask):
+            if np.count_nonzero(blob & self_mask) > .2*np.count_nonzero(blob):
+                continue
             ys, xs = np.nonzero(blob)
             x0, x1, y0, y1 = int(xs.min()), int(xs.max()), int(ys.min()), int(ys.max())
             w_px, h_px = x1 - x0 + 1, y1 - y0 + 1
+            # Thin outlines (such as the orange delivery-pad border) are not
+            # solid primitives. A projected cone still fills about half its box.
+            if float(blob.sum()) / (w_px * h_px) < .28:
+                continue
             # Touching the frame edge means the object is cut off, so its base
             # row is not its base and every measurement from it would be wrong.
             if x0 <= 1 or x1 >= IMG_W - 2 or y1 >= IMG_H - 2:
@@ -336,10 +363,28 @@ def detect(jpg: bytes, pose: dict) -> list[Detection]:
             distance = math.hypot(forward, right)
             width = w_px / F_PX * distance
             height = max(0.02, height_at(y_top, forward))
+            # This primitive-room detector does not classify wall decorations or
+            # floor patches as fetchable bodies. Calibrated metric plausibility
+            # is distance-independent; it is not a pixel-size cutoff.
+            wx=pose['x']+forward*math.cos(heading)-right*math.sin(heading)
+            wy=pose['y']-forward*math.sin(heading)-right*math.cos(heading)
+            if width>.9 or height<.16 or height>1.0 or width>height*2.5 or max(abs(wx),abs(wy))>3.8:
+                continue
+            shape=_classify(blob,(x0,y_top,w_px,y1-y_top+1),height/max(width,1e-6))
+            if shape == 'box' and height_valid:
+                contours,_=cv2.findContours(blob.astype(np.uint8),cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
+                poly=cv2.approxPolyDP(max(contours,key=cv2.contourArea),2,True).reshape(-1,2)
+                edges=[]
+                for v,q in zip(poly,np.roll(poly,-1,axis=0)):
+                    dy=abs(int(v[1])-int(q[1]))
+                    if dy>h_px*.6 and abs(int(v[0])-int(q[0]))<.18*dy:
+                        top,bottom=sorted([v,q],key=lambda p:p[1])
+                        foot=ground_point(float(bottom[0]),float(bottom[1]),0)
+                        if foot is not None:edges.append(height_at(float(top[1]),foot[0]))
+                if edges:height=float(np.median(edges))
             out.append(Detection(
                 colour=colour,
-                shape=_classify(blob, (x0, y_top, x1 - x0 + 1, y1 - y_top + 1),
-                                metric_aspect=height / max(width, 1e-6)),
+                shape=shape,
                 height=round(height, 3),
                 width=round(width, 3),
                 distance=round(distance, 3),
@@ -360,6 +405,7 @@ class Request:
     shape: str | None = None
     size: int | None = None
     superlative: tuple[str, bool] | None = None
+    size_metric: str = 'height'
 
     @property
     def is_empty(self) -> bool:
@@ -385,6 +431,7 @@ def parse_request(command: str) -> Request:
             req.superlative = SUPERLATIVES[w]
         elif w in SIZE_WORDS and req.size is None:
             req.size = SIZE_WORDS[w]
+            req.size_metric = 'height' if w in ('tall', 'short') else 'volume'
     # "tallest" is both a comparison and a size word; the comparison wins,
     # because it refers to the other objects rather than to an absolute scale.
     if req.superlative is not None and req.size is not None:
@@ -425,7 +472,7 @@ def choose(req: Request, seen: list[Detection]) -> Detection | None:
     filter removed the only correct answer. Scoring keeps it in contention and
     lets colour and size decide.
     """
-    pool = list(seen)
+    pool = [d for d in seen if d.height_valid] if req.superlative else list(seen)
     if not pool:
         return None
     if req.colour:
@@ -441,7 +488,7 @@ def choose(req: Request, seen: list[Detection]) -> Detection | None:
         # reliable than testing each against a fixed threshold, because the
         # distance and lighting errors that move the threshold move both
         # candidates the same way and cancel.
-        if req.shape in ("box", "cylinder"):
+        if req.shape in ("box", "cylinder") and req.superlative is None:
             flat = [d for d in pool if d.shape in ("box", "cylinder")]
             if len(flat) >= 2:
                 tallest_first = sorted(
@@ -463,6 +510,9 @@ def choose(req: Request, seen: list[Detection]) -> Detection | None:
             return None
 
     if req.superlative:
+        pool = [d for d in pool if d.height_valid]
+        if not pool:
+            return None
         key, biggest = req.superlative
         return sorted(pool, key=lambda d: getattr(d, key), reverse=biggest)[0]
     if req.size is not None:
@@ -554,5 +604,6 @@ class WorldModel:
                 colour=t["colour"], shape=shape, height=height,
                 width=width, distance=round(distance, 3),
                 bearing=round(bearing, 2), world=(wx, wy),
-                pixels=t["last"].pixels, box=t["last"].box))
+                pixels=t["last"].pixels, box=t["last"].box,
+                height_valid=bool(t["heights"])))
         return out
