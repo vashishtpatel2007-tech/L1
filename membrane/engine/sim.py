@@ -137,6 +137,13 @@ class Sim:
         self.outcome = RunOutcome()
         self._step_counter = 0
         self.sim_clock = 0.0              # simulated seconds, advances only on steps
+        #: The robot's actual route, sampled from the physics rather than from
+        #: whatever the browser managed to poll. The console used to build this
+        #: itself out of /state reads, which during a run arrive about once a
+        #: second: the result was a handful of points joined by long straight
+        #: lines that cut corners the robot never cut, and showed a path it
+        #: never drove. The engine sees every step, so it records it.
+        self.path_trace: list[tuple[float, float, bool]] = []
         self._pace_sim0 = 0.0
         self._pace_wall0 = time.perf_counter()
         self.last_physics: dict[str, Any] = {}
@@ -179,6 +186,16 @@ class Sim:
         mujoco.mj_step(self.model, self.data)
         self._step_counter += 1
         self.sim_clock += float(self.model.opt.timestep)
+        if self._step_counter % VIDEO_EVERY == 0:
+            last = self.path_trace[-1] if self.path_trace else None
+            held = self.holding is not None
+            if (last is None or held != last[2]
+                    or math.hypot(self.x - last[0], self.y - last[1]) > 0.02):
+                self.path_trace.append((round(self.x, 3), round(self.y, 3), held))
+                # A fetch is a few hundred samples; the cap only stops an
+                # unattended console growing without bound.
+                if len(self.path_trace) > 4000:
+                    del self.path_trace[:1000]
         if self.record_video and self._step_counter % VIDEO_EVERY == 0:
             self.video_frames.append(self._render())
         if self.realtime > 0.0 and self._step_counter % VIDEO_EVERY == 0:
@@ -483,6 +500,13 @@ class Sim:
         self.outcome = RunOutcome()
         self._step_counter = 0
         self.sim_clock = 0.0              # simulated seconds, advances only on steps
+        #: The robot's actual route, sampled from the physics rather than from
+        #: whatever the browser managed to poll. The console used to build this
+        #: itself out of /state reads, which during a run arrive about once a
+        #: second: the result was a handful of points joined by long straight
+        #: lines that cut corners the robot never cut, and showed a path it
+        #: never drove. The engine sees every step, so it records it.
+        self.path_trace: list[tuple[float, float, bool]] = []
         self._pace_sim0 = 0.0
         self._pace_wall0 = time.perf_counter()
         self.last_physics: dict[str, Any] = {}

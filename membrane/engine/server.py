@@ -288,6 +288,9 @@ def admin_physics() -> dict[str, Any]:
             "state": w.sim.state,
             "retries": w.sim.retries,
             "holding": bool(w.sim.holding),
+            # The true route, straight from the physics. Only the robot's own
+            # positions, so it discloses nothing about the objects.
+            "trace": w.sim.path_trace,
         }
     return worker.call(job)
 

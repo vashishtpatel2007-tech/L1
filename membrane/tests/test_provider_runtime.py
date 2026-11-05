@@ -19,7 +19,7 @@ from agent.vlm import Decision, FallbackVLM
 class ProviderRuntimeTests(unittest.TestCase):
     def test_fallback_keeps_rate_limited_models_for_the_next_step(self):
         class Fake:
-            name = "gemini"
+            name = "anthropic"
             prices = {}
             def __init__(self, model, fail):
                 self.model = model
@@ -44,7 +44,7 @@ class ProviderRuntimeTests(unittest.TestCase):
 
     def test_fallback_preserves_last_error_when_every_model_is_gone(self):
         class Fake:
-            name = "gemini"
+            name = "anthropic"
             prices = {}
             def __init__(self, model):
                 self.model = model
@@ -79,7 +79,7 @@ class ProviderRuntimeTests(unittest.TestCase):
                 self.assertEqual(os.environ["GEMINI_API_KEY"], "test-exported-key")
 
     def test_provider_failure_releases_claimed_engine(self):
-        with patch.object(sys, "argv", ["agent", "--command", "test", "--provider", "gemini"]), \
+        with patch.object(sys, "argv", ["agent", "--command", "test", "--provider", "anthropic"]), \
              patch.object(loop, "run", side_effect=RuntimeError("HTTP 403: API key rejected")), \
              patch.object(loop, "_release") as release:
             with self.assertRaisesRegex(SystemExit, "HTTP 403"):

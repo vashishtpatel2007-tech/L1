@@ -38,8 +38,7 @@ RETRY_CODES = {408, 429, 500, 502, 503, 504, 529}
 #: Requests per minute to stay under, per provider. Free Gemini tiers are tight
 #: (5-15 rpm) and a 429 mid-run is indistinguishable from a broken agent, so the
 #: loop paces itself rather than discovering the limit the hard way.
-DEFAULT_RPM = {"anthropic": 0, "gemini": 10, "groq": 25,
-               "qwen": 30, "local": 0, "openrouter": 20}   # 0 = unpaced
+DEFAULT_RPM = {"anthropic": 0, "mock": 0}      # 0 = unpaced
 
 _last_call: dict[str, float] = {}
 
@@ -128,7 +127,7 @@ class AnthropicVLM:
     def __init__(self, model: str = "claude-sonnet-5-5", max_tokens: int = 700,
                  rpm: int | None = None) -> None:
         self.model, self.max_tokens = model, max_tokens
-        self.rpm = DEFAULT_RPM[self.name] if rpm is None else rpm
+        self.rpm = DEFAULT_RPM.get(self.name, 0) if rpm is None else rpm
         self.key = os.environ.get(self.env_key, "")
 
     def decide(self, system: str, tools: list[dict], image_jpeg: bytes, text: str) -> Decision:
@@ -162,305 +161,9 @@ class AnthropicVLM:
 
 
 # ----------------------------------------------------------------- Gemini --
-class GeminiVLM:
-    """Free tier, vision + function calling. Used to validate the pipeline
-    before the Claude key exists; never the submitted configuration."""
-
-    name = "gemini"
-    env_key = "GEMINI_API_KEY"
-    prices = {"gemini-2.5-flash": (0.30, 2.50), "gemini-2.0-flash": (0.10, 0.40)}
-
-    def __init__(self, model: str = "gemini-2.5-flash", max_tokens: int = 700,
-                 rpm: int | None = None) -> None:
-        self.model, self.max_tokens = model, max_tokens
-        self.rpm = DEFAULT_RPM[self.name] if rpm is None else rpm
-        self.key = os.environ.get(self.env_key) or os.environ.get("GOOGLE_API_KEY", "")
-
-    @staticmethod
-    def _tools(tools: list[dict]) -> list[dict]:
-        """Anthropic tool schema -> Gemini function declarations.
-
-        Gemini rejects a parameters object with an empty `properties`, so a
-        no-argument tool must declare no parameters at all.
-        """
-        decls = []
-        for t in tools:
-            fn: dict[str, Any] = {"name": t["name"], "description": t.get("description", "")}
-            schema = t.get("input_schema") or {}
-            if schema.get("properties"):
-                fn["parameters"] = {
-                    "type": "object",
-                    "properties": {
-                        k: {kk: vv for kk, vv in v.items() if kk in ("type", "description")}
-                        for k, v in schema["properties"].items()
-                    },
-                    **({"required": schema["required"]} if schema.get("required") else {}),
-                }
-            decls.append(fn)
-        return [{"function_declarations": decls}]
-
-    def decide(self, system: str, tools: list[dict], image_jpeg: bytes, text: str) -> Decision:
-        body = {
-            "system_instruction": {"parts": [{"text": system}]},
-            "contents": [{"role": "user", "parts": [
-                {"inline_data": {"mime_type": "image/jpeg",
-                                 "data": base64.b64encode(image_jpeg).decode()}},
-                {"text": text},
-            ]}],
-            "tools": self._tools(tools),
-            "tool_config": {"function_calling_config": {"mode": "ANY"}},
-            "generationConfig": {"maxOutputTokens": self.max_tokens, "temperature": 0.2},
-        }
-        _pace(self.name, self.rpm)
-        out = _post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent",
-            {"x-goog-api-key": self.key}, body)
-
-        d = Decision(tool=None, provider=self.name, model=self.model)
-        cands = out.get("candidates") or []
-        if not cands:
-            d.error = f"no candidates: {str(out)[:200]}"
-            return d
-        for part in cands[0].get("content", {}).get("parts", []) or []:
-            if "text" in part:
-                d.text += part["text"]
-            if "functionCall" in part:
-                fc = part["functionCall"]
-                d.tool, d.args = fc.get("name"), dict(fc.get("args") or {})
-        m = out.get("usageMetadata", {})
-        d.usage = {"input": int(m.get("promptTokenCount", 0)),
-                   "output": int(m.get("candidatesTokenCount", 0)),
-                   "cache_read": int(m.get("cachedContentTokenCount", 0))}
-        return d
 
 
-# ------------------------------------------------------------------- Groq --
-class GroqVLM:
-    """OpenAI-compatible vision + tools. Fast cloud fallback."""
 
-    name = "groq"
-    env_key = "GROQ_API_KEY"
-    prices = {
-        "qwen/qwen3.8-27b": (0.80, 4.00),
-        "meta-llama/llama-4-scout-17b-16e-instruct": (0.11, 0.34),
-    }
-
-    def __init__(self, model: str = "qwen/qwen3.8-27b",
-                 max_tokens: int = 700, rpm: int | None = None) -> None:
-        self.model, self.max_tokens = model, max_tokens
-        self.rpm = DEFAULT_RPM[self.name] if rpm is None else rpm
-        self.key = os.environ.get(self.env_key, "") or os.environ.get("GROQ_API", "")
-
-    def decide(self, system: str, tools: list[dict], image_jpeg: bytes, text: str) -> Decision:
-        oa_tools = [{"type": "function", "function": {
-            "name": t["name"], "description": t.get("description", ""),
-            "parameters": t.get("input_schema") or {"type": "object", "properties": {}},
-        }} for t in tools]
-        b64 = base64.b64encode(image_jpeg).decode()
-        body = {
-            "model": self.model, "max_tokens": self.max_tokens, "tools": oa_tools,
-            "tool_choice": "required",
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                    {"type": "text", "text": text},
-                ]},
-            ],
-        }
-        _pace(self.name, self.rpm)
-        out = _post("https://api.groq.com/openai/v1/chat/completions",
-                    {"Authorization": f"Bearer {self.key}"}, body)
-        d = Decision(tool=None, provider=self.name, model=self.model)
-        msg = (out.get("choices") or [{}])[0].get("message", {})
-        d.text = msg.get("content") or ""
-        for call in msg.get("tool_calls") or []:
-            fn = call.get("function", {})
-            d.tool = fn.get("name")
-            try:
-                d.args = json.loads(fn.get("arguments") or "{}")
-            except json.JSONDecodeError:
-                d.args = {}
-        u = out.get("usage", {})
-        d.usage = {"input": int(u.get("prompt_tokens", 0)),
-                   "output": int(u.get("completion_tokens", 0)), "cache_read": 0}
-        return d
-
-
-# ------------------------------------------------------------------ local --
-class LocalVLM:
-    """A vision model running on this machine through Ollama.
-
-    Why this matters more than another hosted key: there is no quota, no rate
-    limit and no per-call cost, so the loop can be exercised as hard as the
-    schedule allows. It also runs with the network unplugged, which is the one
-    failure mode a venue reliably provides.
-
-    Ollama speaks the OpenAI chat format at /v1, so this is the same wire
-    protocol as Groq with a different base URL and no key.
-    """
-
-    name = "local"
-    env_key = "OLLAMA_HOST"          # optional; only to point at another host
-    prices = {}                      # free
-
-    def __init__(self, model: str = "qwen2.5vl:7b", max_tokens: int = 700,
-                 rpm: int | None = None) -> None:
-        self.model, self.max_tokens = model, max_tokens
-        self.rpm = 0 if rpm is None else rpm          # no limit worth respecting
-        self.host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
-        self.key = "local"                            # build() checks truthiness
-
-    def decide(self, system: str, tools: list[dict], image_jpeg: bytes, text: str) -> Decision:
-        oa_tools = [{"type": "function", "function": {
-            "name": t["name"], "description": t.get("description", ""),
-            "parameters": t.get("input_schema") or {"type": "object", "properties": {}},
-        }} for t in tools]
-        b64 = base64.b64encode(image_jpeg).decode()
-        body = {
-            "model": self.model, "tools": oa_tools, "tool_choice": "required",
-            "options": {"temperature": 0.2, "num_predict": self.max_tokens},
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                    {"type": "text", "text": text},
-                ]},
-            ],
-        }
-        out = _post(f"{self.host}/v1/chat/completions", {}, body)
-        d = Decision(tool=None, provider=self.name, model=self.model)
-        msg = (out.get("choices") or [{}])[0].get("message", {})
-        d.text = msg.get("content") or ""
-        for call in msg.get("tool_calls") or []:
-            fn = call.get("function", {})
-            d.tool = fn.get("name")
-            raw = fn.get("arguments")
-            try:
-                d.args = raw if isinstance(raw, dict) else json.loads(raw or "{}")
-            except json.JSONDecodeError:
-                d.args = {}
-        u = out.get("usage", {})
-        d.usage = {"input": int(u.get("prompt_tokens", 0)),
-                   "output": int(u.get("completion_tokens", 0)), "cache_read": 0}
-        return d
-
-
-# ------------------------------------------------------------- openrouter --
-class OpenRouterVLM:
-    """One key, many hosted models, several with a free tier. Useful when a
-    single provider's daily quota is spent but the schedule is not."""
-
-    name = "openrouter"
-    env_key = "OPENROUTER_API_KEY"
-    prices = {}
-
-    def __init__(self, model: str = "meta-llama/llama-3.2-11b-vision-instruct:free",
-                 max_tokens: int = 700, rpm: int | None = None) -> None:
-        self.model, self.max_tokens = model, max_tokens
-        self.rpm = 20 if rpm is None else rpm
-        self.key = os.environ.get(self.env_key, "")
-
-    def decide(self, system: str, tools: list[dict], image_jpeg: bytes, text: str) -> Decision:
-        oa_tools = [{"type": "function", "function": {
-            "name": t["name"], "description": t.get("description", ""),
-            "parameters": t.get("input_schema") or {"type": "object", "properties": {}},
-        }} for t in tools]
-        b64 = base64.b64encode(image_jpeg).decode()
-        body = {
-            "model": self.model, "max_tokens": self.max_tokens, "tools": oa_tools,
-            "tool_choice": "required",
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                    {"type": "text", "text": text},
-                ]},
-            ],
-        }
-        out = _post("https://openrouter.ai/api/v1/chat/completions",
-                    {"Authorization": f"Bearer {self.key}"}, body)
-        d = Decision(tool=None, provider=self.name, model=self.model)
-        msg = (out.get("choices") or [{}])[0].get("message", {})
-        d.text = msg.get("content") or ""
-        for call in msg.get("tool_calls") or []:
-            fn = call.get("function", {})
-            d.tool = fn.get("name")
-            try:
-                d.args = json.loads(fn.get("arguments") or "{}")
-            except json.JSONDecodeError:
-                d.args = {}
-        u = out.get("usage", {})
-        d.usage = {"input": int(u.get("prompt_tokens", 0)),
-                   "output": int(u.get("completion_tokens", 0)), "cache_read": 0}
-        return d
-
-
-# ------------------------------------------------------------ qwen hosted --
-class QwenVLM:
-    """Qwen-VL through Alibaba's Model Studio (DashScope).
-
-    The hosted models are far larger than anything that fits on this laptop --
-    qwen-vl-max against a local 7B -- and the gap shows exactly where the local
-    model is weakest: holding a multi-step plan together across the carry leg.
-    Local stays useful for unlimited iteration; this is for runs that need to
-    actually finish.
-
-    DashScope exposes an OpenAI-compatible endpoint, so this is the same wire
-    format as Groq and OpenRouter with a different base URL.
-    """
-
-    name = "qwen"
-    env_key = "DASHSCOPE_API_KEY"
-    # USD per million tokens, for budget tracking only
-    prices = {"qwen-vl-max": (0.80, 3.20), "qwen-vl-plus": (0.21, 0.63)}
-
-    #: International endpoint. Mainland accounts use dashscope.aliyuncs.com;
-    #: override with DASHSCOPE_BASE_URL rather than editing this.
-    BASE = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-
-    def __init__(self, model: str = "qwen-vl-max", max_tokens: int = 700,
-                 rpm: int | None = None) -> None:
-        self.model, self.max_tokens = model, max_tokens
-        self.rpm = 30 if rpm is None else rpm
-        self.key = os.environ.get(self.env_key) or os.environ.get("QWEN_API_KEY", "")
-        self.base = os.environ.get("DASHSCOPE_BASE_URL", self.BASE).rstrip("/")
-
-    def decide(self, system: str, tools: list[dict], image_jpeg: bytes, text: str) -> Decision:
-        oa_tools = [{"type": "function", "function": {
-            "name": t["name"], "description": t.get("description", ""),
-            "parameters": t.get("input_schema") or {"type": "object", "properties": {}},
-        }} for t in tools]
-        b64 = base64.b64encode(image_jpeg).decode()
-        body = {
-            "model": self.model, "max_tokens": self.max_tokens, "tools": oa_tools,
-            "tool_choice": "required", "temperature": 0.2,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                    {"type": "text", "text": text},
-                ]},
-            ],
-        }
-        _pace(self.name, self.rpm)
-        out = _post(f"{self.base}/chat/completions",
-                    {"Authorization": f"Bearer {self.key}"}, body)
-        d = Decision(tool=None, provider=self.name, model=self.model)
-        msg = (out.get("choices") or [{}])[0].get("message", {})
-        d.text = msg.get("content") or ""
-        for call in msg.get("tool_calls") or []:
-            fn = call.get("function", {})
-            d.tool = fn.get("name")
-            raw = fn.get("arguments")
-            try:
-                d.args = raw if isinstance(raw, dict) else json.loads(raw or "{}")
-            except json.JSONDecodeError:
-                d.args = {}
-        u = out.get("usage", {})
-        d.usage = {"input": int(u.get("prompt_tokens", 0)),
-                   "output": int(u.get("completion_tokens", 0)), "cache_read": 0}
-        return d
 
 
 class FallbackVLM:
@@ -517,19 +220,20 @@ class FallbackVLM:
         return Decision(tool=None, error=f"all models unavailable: {(last or 'no remaining models')[:200]}")
 
 
-PROVIDERS = {"mock": MockVLM, "anthropic": AnthropicVLM, "gemini": GeminiVLM, "groq": GroqVLM,
-             "qwen": QwenVLM, "local": LocalVLM, "openrouter": OpenRouterVLM}
-#: Gemini's default is a FALLBACK CHAIN, not one model. Free tiers hand out
-#: per-model 429s and the newer previews return 503 under load, so a single
-#: default leaves the console dead on arrival for no reason to do with the agent.
+#: The brief names Claude as the reasoning model, so Claude is what ships.
+#: Earlier revisions carried Gemini, Groq, Qwen, OpenRouter, GitHub Models,
+#: Mistral and a local Ollama backend as stand-ins while no Anthropic key was
+#: available. Each had its own auth, tool-schema and rate-limit quirks, and
+#: keeping seven half-exercised paths alive is seven ways for the real one to
+#: break unnoticed. `mock` remains: it is the zero-API path that drives the
+#: offline validation sweeps, and it calls nothing.
+PROVIDERS = {"mock": MockVLM, "anthropic": AnthropicVLM}
+#: A comma-separated preference order, tried left to right. Sonnet is the
+#: default because it reads the scene accurately at a fraction of Opus's cost
+#: per step, and a fetch is thirty-odd steps.
 DEFAULT_MODEL = {
     "mock": "geometry",
-    "anthropic": "claude-sonnet-5-5",
-    "gemini": "gemini-3-flash-preview,gemini-3.1-flash-lite,gemini-3.7-flash,gemini-2.5-flash",
-    "groq": "qwen/qwen3.8-27b",
-    "qwen": "qwen-vl-max,qwen-vl-plus",
-    "local": "qwen2.5vl:7b",
-    "openrouter": "meta-llama/llama-3.2-11b-vision-instruct:free",
+    "anthropic": "claude-sonnet-5-5,claude-opus-5-5,claude-haiku-5-5",
 }
 
 
@@ -552,14 +256,6 @@ def cost_usd(vlm, usage: dict[str, int]) -> float:
     return (usage.get("input", 0) / 1e6) * pin + (usage.get("output", 0) / 1e6) * pout
 
 
-def _ollama_up() -> bool:
-    host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
-    try:
-        with urllib.request.urlopen(f"{host}/api/tags", timeout=2) as r:
-            return r.status == 200
-    except Exception:
-        return False
-
 
 def available() -> dict[str, bool]:
     """Which providers are usable right now, without revealing any key.
@@ -577,18 +273,6 @@ def available() -> dict[str, bool]:
     except Exception:
         pass
 
-    out = {}
-    for name, cls in PROVIDERS.items():
-        if name == "mock":
-            out[name] = True
-        elif name == "local":
-            out[name] = _ollama_up()
-        elif name == "gemini":
-            out[name] = bool(os.environ.get(cls.env_key) or os.environ.get("GOOGLE_API_KEY"))
-        elif name == "qwen":
-            out[name] = bool(os.environ.get(cls.env_key) or os.environ.get("QWEN_API_KEY"))
-        elif name == "groq":
-            out[name] = bool(os.environ.get(cls.env_key) or os.environ.get("GROQ_API"))
-        else:
-            out[name] = bool(os.environ.get(cls.env_key))
-    return out
+    # `mock` needs no key: it is the offline path and calls nothing.
+    return {name: True if name == "mock" else bool(os.environ.get(cls.env_key))
+            for name, cls in PROVIDERS.items()}

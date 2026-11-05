@@ -897,7 +897,7 @@ def _commit_spend(delta: float) -> float:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--command", required=True)
-    ap.add_argument("--provider", default="mock", choices=["mock", "anthropic", "gemini", "groq", "qwen", "local", "openrouter"],
+    ap.add_argument("--provider", default="mock", choices=["anthropic", "mock"],
                     help="mock is the local zero-cost geometry baseline; anthropic ships at the event")
     ap.add_argument("--model", default=None, help="provider default if omitted")
     ap.add_argument("--rpm", type=int, default=None,

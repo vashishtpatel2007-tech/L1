@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.request
@@ -27,7 +28,7 @@ from agent import vlm                                   # noqa: E402
 from agent.env import load as load_env                  # noqa: E402
 from agent.loop import SYSTEM, TOOLS                    # noqa: E402
 
-ENGINE = "http://127.0.0.1:8080"
+ENGINE = os.environ.get("MEMBRANE_ENGINE", "http://127.0.0.1:8080")
 
 #: Common failures and what to actually do about them. A bare HTTP code sends
 #: people hunting; the cause is nearly always one of these five.
@@ -42,20 +43,7 @@ GENERAL_HINTS = [
 #: A 404 means completely different things per provider, and a generic hint
 #: sends people to the wrong console.
 PROVIDER_HINTS = {
-    "qwen": [("404", "that model name is not on this endpoint. Try "
-                     "--model qwen-vl-plus, or set DASHSCOPE_BASE_URL to "
-                     "https://dashscope.aliyuncs.com/compatible-mode/v1 if your "
-                     "account is in the mainland region rather than international.")],
-    "local": [("404", "the model is not downloaded. Run: ollama pull qwen2.5vl:7b"),
-              ("connection", "the Ollama daemon is not running. Run: ollama serve")],
-    "gemini": [("404", "that model was retired. The default chain already falls back; "
-                       "pass --model to pick another."),
-               ("429", "per-model quota. Wait a minute, or pass --model gemini-3.1-flash-lite."),
-               ("400", "the image was rejected or the model needs a different payload. "
-                       "Retry with the engine running so /look is a real 640x480 JPEG.")],
-    "openrouter": [("404", "unknown model slug. Check the exact id on openrouter.ai/models.")],
     "anthropic": [("404", "unknown model id. Use claude-sonnet-5-5.")],
-    "groq": [("404", "unknown model id. Check console.groq.com/docs/models.")],
 }
 
 

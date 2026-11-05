@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import os
 import sys
 import time
 import urllib.request
@@ -27,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.commands import COMMAND_SET, resolve, truth  # noqa: E402
 
-ENGINE = "http://127.0.0.1:8080"
+ENGINE = os.environ.get("MEMBRANE_ENGINE", "http://127.0.0.1:8080")
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -49,7 +50,7 @@ def run_oracle(target: str, command: str, obstacles: bool) -> dict:
 
 
 def run_agent(command: str, model: str, mock: bool, max_steps: int,
-              obstacles: bool, run_id: str, provider: str = "gemini") -> dict:
+              obstacles: bool, run_id: str, provider: str = "anthropic") -> dict:
     cmd = [sys.executable, "-m", "agent.loop", "--command", command,
            "--max-steps", str(max_steps), "--run-id", run_id, "--provider", provider]
     if model:
@@ -68,7 +69,7 @@ def run_agent(command: str, model: str, mock: bool, max_steps: int,
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["oracle", "claude", "mock"], default="oracle")
-    ap.add_argument("--provider", default="gemini")
+    ap.add_argument("--provider", default="anthropic")
     ap.add_argument("--model", default=None)
     ap.add_argument("--max-steps", type=int, default=35)
     ap.add_argument("--limit", type=int, default=0, help="only the first N commands")
@@ -100,7 +101,7 @@ def main() -> int:
             outcome = res.get("engine_outcome", {})
         else:
             provider = a.provider if a.mode != "claude" else (a.provider or "anthropic")
-            if a.mode == "claude" and a.provider == "gemini" and not a.model:
+            if a.mode == "claude" and a.provider == "anthropic" and not a.model:
                 provider = "anthropic"
             res = run_agent(command, a.model, a.mode == "mock", a.max_steps,
                             a.obstacles, f"reg{i:02d}", provider)
