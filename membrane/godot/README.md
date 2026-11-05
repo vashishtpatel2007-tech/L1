@@ -25,7 +25,7 @@ existing model-provider workflow are retained.
 - FPV: 640×480, horizontal FOV 90°, height 0.5 m, downward pitch 10°,
   existing forward lens offset 0.18 m. Enlarged robot forearms and two-finger
   grippers are visible in FPV and follow the held object's actual side surface.
-- Top: 1012×760 orthographic Godot image, trajectory, local click annotations.
+- Top: 1012×760 orthographic Godot image, trajectory; manual click annotations are removed.
 - Room: 1440×1080 cinematic observer, larger dashboard panel. Foreground walls
   are hidden only for the dollhouse views; FPV includes all walls.
 
@@ -71,7 +71,8 @@ and idealized grasp, not a torque-controlled manipulation simulator.
 
 Load clear, horizontal-front, left-open, right-open or sealed scenarios from the
 console. A private engine diagnostic checks complete enclosure by rectangular
-barriers and displays a centered red 75vw × 75vh error dialog only when enclosed.
+barriers and displays a centered 75vw × 75vh error dialog only when enclosed.
+The dialog follows the current white-and-black dashboard theme.
 It does not expose coordinates or scene metadata to the agent. A partial wall
 or an uncertain camera route is not mislabeled as complete enclosure. The
 verdict is specific to the configured rectangular barriers; it is not a general
