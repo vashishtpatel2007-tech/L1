@@ -85,7 +85,7 @@ Run from membrane:
     ../.venv/bin/python -m pytest tests -m 'not integration' -q
     MEMBRANE_ENGINE=http://127.0.0.1:8082 ../.venv/bin/python scripts/verify_halloween.py
 
-The renderer check is read-only; run while idle. The suite has 150 passing
+The renderer check is read-only; run while idle. The suite has 189 passing
 non-live checks, including camera-height inversion across five distances,
 clipped-height rejection, enclosure vs partial barriers, alternate approaches,
 unsafe fallback rejection and exactly 30 captured frames per simulation second.
@@ -101,7 +101,7 @@ Godot references checked:
 
 The larger FPV and logs occupy the upper row. Rectangular trajectory and room
 views are below. Fullscreen controls on FPV and observer return with the button
-or Escape. The page background is black; seed/clutter selectors and the
+or Escape. The page background is white with black text and monochrome controls; seed/clutter selectors and the
 randomisation explanation are hidden/removed. Manual trajectory markers and their click/double-click handlers are removed.
 The white recorded robot path remains visible.
 
@@ -119,3 +119,7 @@ resets hand animation when simulation time resets. Gold edge-connected forearms
 are excluded from object ranking using camera pixels. Model/provider logic is
 still covered by the existing tests; the live validation uses the free mock
 policy and does not certify paid-provider responses.
+
+## All views and ambiguity handling
+
+Use **All views fullscreen** to show the three live views side by side with logs below. **Back to dashboard** or Escape restores the layout. Before fetching, the robot performs a full in-place camera sweep. If two matching items remain, it stops and asks for a more specific command; e.g. “the smaller purple cone”. No forward movement occurs before that initial selection check. See FINAL_AUDIT.md for verified scenarios and visibility limitations.
