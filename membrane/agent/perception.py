@@ -116,6 +116,13 @@ def height_at(v_top: float, forward: float) -> float:
     The base row fixed the distance; this inverts the same ray equation for the
     top row with that distance held, which is what makes a height measurement
     possible from one frame.
+
+    This is why apparent size never fools a size comparison. A tall object far
+    away and a short object close up can cover the same number of pixels, but
+    once the distance is divided back out, both come back in metres at their
+    true size. Every ranking -- tallest, shortest, largest, smallest -- is done
+    on these metres, never on pixel extent, so foreshortening cannot cause a
+    wrong pick or a false placement.
     """
     q = (v_top - IMG_H / 2) / F_PX
     sin, cos = math.sin(math.radians(CAM_TILT_DEG)), math.cos(math.radians(CAM_TILT_DEG))

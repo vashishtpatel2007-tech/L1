@@ -203,35 +203,40 @@ class ReturnNavigator:
                 self.phase = "Carrying, looking for the delivery marker"
                 return None
         if pose["state"] == "Blocked":
-            # Obstructed: let the model back out and re-route rather than
+            # Obstructed: back out and let the copilot re-route rather than
             # stranding the robot holding the item.
             self.phase = "Carrying, route blocked, recovering"
-            self.return_route = None
             return None
+
+        # Head STRAIGHT for the delivery platform. The robot used to retrace
+        # its outbound route in reverse -- list(reversed(self.route)) -- which
+        # sent it back to where it first spotted the object before turning for
+        # the platform, a visibly wrong dog-leg. The shortest path to the drop
+        # zone does not pass through where the robot happened to come from; it
+        # goes directly, and the copilot bends it around any obstacle in the
+        # way while keeping the brief's 0.5 m clearance.
         here = (pose["x"], pose["y"])
-        if self.return_route is None:
-            self.return_route = list(reversed(self.route))
-        while self.return_route and math.dist(here, self.return_route[0]) <= 0.08:
-            self.return_route.pop(0)
-        if self.return_route:
-            self.phase = "Returning along clear route"
-            target, standoff = self.return_route[0], 0.0
-        else:
-            self.phase = "Approaching delivery platform"
-            target, standoff = self.goal, 0.60
+        target, standoff = self.goal, 0.60
+        self.phase = "Carrying straight to the delivery platform"
         distance = math.dist(here, target)
         angle = self._angle(target, pose)
         if abs(angle) > 2:
-            return "turn", {"degrees": round(angle, 2)}, "aligning with the remembered route using measured robot heading"
-        if not self.return_route and abs(distance - standoff) <= 0.07:
+            return ("turn", {"degrees": round(angle, 2)},
+                    "facing the delivery platform directly, by camera measurement")
+        if abs(distance - standoff) <= 0.07:
             self.phase = "Placing object on platform"
-            return "drop", {}, "carried item is aligned over the camera-measured delivery position; releasing"
+            return ("drop", {},
+                    "over the camera-measured delivery position; releasing")
         travel = max(-0.4, min(1.2, distance - standoff))
         if self.last_position is not None and math.dist(here, self.last_position) < 0.02:
             self.stalled += 1
         else:
             self.stalled = 0
-        if self.stalled >= 2:
-            raise RuntimeError("Return movement is not making progress; stopping with the item held.")
+        if self.stalled >= 3:
+            # Not giving up -- hand control back to the model, which can see a
+            # way the geometry here cannot.
+            self.stalled = 0
+            return None
         self.last_position = here
-        return "move", {"distance": round(travel, 3)}, "following the observed clear route; checking actual displacement after each move"
+        return ("move", {"distance": round(travel, 3)},
+                "driving straight toward the platform; the copilot keeps it clear")

@@ -98,6 +98,29 @@ SENSORS
   behind. At that range trust the base-row estimate instead.
 - `collided` true means you touched something and were pushed back 0.1 m.
 
+A VISION AID RUNS ON YOUR CAMERA FEED
+Most steps, below the status line, you get a VISION block: a list measured from
+your own camera pixels of what is currently in view -- each thing's rough
+direction and distance -- and, when you are still fetching, which one best fits
+the command. It is a second pair of eyes computed from the same picture you see,
+so it is advisory, not an order: usually right about direction and distance,
+occasionally wrong about an item's kind. Weigh it against the frame. When it
+offers a best match, face the direction it gives and drive at it rather than
+guessing; when it says nothing matches yet, keep looking.
+
+OBSTACLES AND CLEARANCE  (how collisions are avoided)
+Everything in the room that is not your target is an obstacle, and so is the
+target of the drop once you are carrying. Never drive through one to reach
+something behind it -- go around, leaving room to spare. A safety copilot checks
+every move against the measured layout and may quietly change it: shortening a
+move, turning you onto a clear detour, stopping you a hand's width from the
+target, or grasping when you are already in range. It keeps you at least half a
+metre from anything you are not fetching, and it notes what it did in the step
+record. So when a move comes back changed, or `collided` is true, something was
+in your path: turn to open a clear line before driving again -- never shove
+forward into it. Three collisions end the run; with the copilot helping you
+should have none.
+
 BEFORE EVERY OTHER CONSIDERATION, ASK: CAN I GRASP NOW?
 If the item the command names is ahead of you and its base is below about row
 430 -- or it is large in the lower part of the frame and roughly centred -- call
@@ -154,10 +177,13 @@ HOW TO ACT WELL
   how far, and without it the robot cannot tell you when you have arrived -- runs
   have driven straight over the patch without ever releasing. With both, you are
   told the remaining distance every step and exactly when to drop.
-- THE CARRY LEG IS WHERE RUNS ARE LOST, in one of two ways. Driving forward
-  hoping the platform is that way, or sweeping straight past it after spotting
-  it. If it is not in frame, sweep. If it IS in frame, immediately turn by the
-  computed angle to centre it and then drive -- never another blind sweep step.
+- THE CARRY LEG GOES STRAIGHT TO THE PLATFORM. Do not retrace how you came or
+  loop back through where you picked the item up -- drive to the platform by
+  the most direct line you can, and the copilot bends it around anything in the
+  way. Runs are lost here in two ways: driving forward hoping the platform is
+  that way, or sweeping straight past it after spotting it. If it is not in
+  frame, sweep. If it IS in frame, turn by the computed angle to centre it and
+  then drive -- never another blind sweep step.
 - Never claim in your reason that you can see something you cannot. An honest
   "the platform is not in view, sweeping" is worth far more than a guess, because
   the next decision is made from what you wrote.
@@ -637,10 +663,20 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
         if copilot is not None:
             copilot.observe(jpg, st)         # camera + own pose, no extra engine call
         try:
-            action = (navigator.decide(jpg, st) if st["holding"]
-                      else navigator.prepare(jpg, st))
+            action = None
+            # The copilot owns the CARRY leg only: it follows one planned route
+            # to the platform, so heading and obstacle avoidance are decided
+            # together and nothing can fight it into a spin. The approach is
+            # left to the model (which reads the live frame well) with the
+            # copilot vetting its moves for safety below. carry_action returns
+            # None until the platform has been seen, and the model searches then.
+            if st["holding"] and copilot is not None:
+                action = copilot.carry_action(st)
+            if action is None:
+                action = (navigator.decide(jpg, st) if st["holding"]
+                          else navigator.prepare(jpg, st))
         except Exception as e:
-            # The navigator is an optimisation. If it misbehaves the model can
+            # Navigation is an optimisation. If it misbehaves the model can
             # still do the whole task from pixels, so degrade rather than die.
             history.append(f"{step}: return-navigation unavailable ({type(e).__name__})")
             action = None
@@ -805,7 +841,13 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
                 thinking = f"{thinking}  [{note}]" if thinking else note
 
         # ---- copilot: make the move safe against the measured world ----
-        if copilot is not None and tool in ("move", "turn"):
+        # Copilot-driven legs (approach and carry) are already safe, so they are
+        # not vetted again -- re-running the obstacle logic over its own output
+        # is what let the two halves oscillate.
+        from_copilot = (copilot is not None
+                        and isinstance(thinking, str) and "copilot:" in thinking)
+        if (copilot is not None and tool in ("move", "turn")
+                and not from_copilot):
             safe = copilot.safe_action(tool, args, st, st["holding"], depth)
             if safe is not None:
                 tool, args, note = safe
@@ -826,6 +868,9 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
             result = sanitize("drop", _post("/drop"))
         else:
             result = {"error": "unknown tool"}
+
+        if copilot is not None:
+            copilot.note_result(tool, result)   # a missed grasp changes the plan
 
         turn_streak = turn_streak + 1 if tool == "turn" else 0
         steps_since_pickup_try = 0 if tool == "pickup" else steps_since_pickup_try + 1

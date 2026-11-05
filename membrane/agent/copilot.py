@@ -29,6 +29,7 @@ import math
 from dataclasses import dataclass, field
 
 from . import perception
+from .navigation import marker_from_image
 from .perception import Detection, Request, WorldModel
 
 try:
@@ -42,8 +43,11 @@ except Exception:                                             # pragma: no cover
 #: Keep at least this far from any object the robot is not fetching. The brief's
 #: own safety margin.
 CLEARANCE = 0.5
-#: A clean standoff for grasping: inside the 0.5 m reach, outside contact.
-GRASP_STANDOFF = 0.42
+#: A clean standoff for grasping. Inside the 0.5 m reach with room to spare,
+#: because the camera-measured target position carries about 0.12 m of error
+#: and a standoff at the very edge of reach turns that error into a missed
+#: grasp. 0.36 m keeps the true distance under 0.5 m even at the worst case.
+GRASP_STANDOFF = 0.36
 
 
 @dataclass
@@ -52,6 +56,41 @@ class Copilot:
     request: Request | None = None
     target: dict | None = None          # the committed target, as a world track
     _committed_xy: tuple[float, float] | None = None
+    drop_zone: tuple[float, float] | None = None   # camera-measured platform
+    grasp_fails: int = 0                 # consecutive failed pickups at the target
+    _last_xy: tuple[float, float] | None = None
+    _turns_without_moving: int = 0
+    _carry_route: list | None = None
+    _carry_goal: tuple[float, float] | None = None
+    _replan_carry: bool = False
+
+    def _note_pose(self, pose: dict) -> bool:
+        """Track whether the robot is actually moving. Returns True if it has
+        turned several times in a row without the position changing -- a sign
+        it is stuck hunting a heading and should drive instead."""
+        here = (pose["x"], pose["y"])
+        if self._last_xy is not None and math.dist(here, self._last_xy) < 0.03:
+            self._turns_without_moving += 1
+        else:
+            self._turns_without_moving = 0
+        self._last_xy = here
+        return self._turns_without_moving >= 4
+
+    def note_result(self, tool: str, result: dict) -> None:
+        """Learn from what just happened, so a failed grasp changes the plan.
+
+        Without this the copilot would read the same geometry next step and
+        issue the same pickup, forever: a missed grasp spammed `pickup` 70-odd
+        times until the budget ran out. A failure here makes the approach nudge
+        and re-aim instead, and after a few, hand the problem to the model.
+        """
+        if tool == "pickup":
+            if result.get("success"):
+                self.grasp_fails = 0
+            else:
+                self.grasp_fails += 1
+        if isinstance(result, dict) and result.get("collided"):
+            self._replan_carry = True       # the planned route hit something
 
     # ---------------------------------------------------------------- see --
     def observe(self, jpg: bytes, pose: dict) -> None:
@@ -60,6 +99,20 @@ class Copilot:
             self.world.observe(perception.detect(jpg, pose))
         except Exception:
             pass                        # perception is an aid; never fatal
+        try:
+            seen = marker_from_image(jpg, pose)
+            if seen is not None:
+                # Smooth it. A single frame's marker estimate jitters by a
+                # tenth of a metre, and feeding that raw to the carry heading
+                # made the robot hunt around the platform bearing without ever
+                # settling. A running mesh of past estimates is steady.
+                if self.drop_zone is None:
+                    self.drop_zone = seen
+                else:
+                    self.drop_zone = (0.7 * self.drop_zone[0] + 0.3 * seen[0],
+                                      0.7 * self.drop_zone[1] + 0.3 * seen[1])
+        except Exception:
+            pass
 
     def set_command(self, command: str) -> None:
         self.request = perception.parse_request(command)
@@ -89,6 +142,86 @@ class Copilot:
             return self._committed_xy
         self._committed_xy = t.world
         return t.world
+
+    def _sightings(self, world_xy: tuple[float, float]) -> int:
+        """How many frames this position has been seen in -- the confidence
+        that it is a real object and not a one-frame artefact."""
+        best, n = 1e9, 0
+        for t in self.world.tracks:
+            dd = math.dist(t["world"], world_xy)
+            if dd < best:
+                best, n = dd, t["n"]
+        return n if best < 0.3 else 0
+
+    # --------------------------------------------------------- carry leg --
+    DROP_STANDOFF = 0.60                 # where the robot stops to release
+
+    def carry_action(self, pose: dict) -> tuple[str, dict, str] | None:
+        """Carry the item to the platform along one planned route.
+
+        The route is the heart of it. Planning a full A* path to the platform
+        ONCE and then following its fixed waypoints is what stops the carry leg
+        oscillating: with concrete points to drive through, the heading never
+        hunts, and the path is both direct (the planner\'s shortest) and clear
+        (0.5 m from every object). It is not the retrace the robot used to do --
+        that reversed the outbound path and doubled back through where the
+        object was found; this goes straight to the platform.
+
+        The route is replanned only when it must be: when the platform is first
+        seen, when a collision or a stall says the world is not what was
+        planned, or when the platform estimate has shifted a long way. Returns
+        None until the platform has been seen, so the model searches for it.
+        """
+        if planner is None or self.drop_zone is None:
+            return None
+        here = (pose["x"], pose["y"])
+        goal = self.drop_zone
+        stuck = self._note_pose(pose)
+
+        # A standoff point short of the platform centre, on the line from here,
+        # so the robot stops in front of it rather than on it.
+        gx, gy = goal
+        gd = math.dist(here, goal) or 1.0
+        stop = (gx - (gx - here[0]) / gd * self.DROP_STANDOFF,
+                gy - (gy - here[1]) / gd * self.DROP_STANDOFF)
+
+        # Arrived.
+        if math.dist(here, goal) <= self.DROP_STANDOFF + 0.12:
+            self._carry_route = None
+            return ("drop", {}, "copilot: at the platform standoff; releasing")
+
+        # (Re)plan when there is no route, the goal moved, we were bumped, or we
+        # have stalled hunting a heading.
+        need_plan = (self._carry_route is None
+                     or self._carry_goal is None
+                     or math.dist(self._carry_goal, goal) > 0.4
+                     or self._replan_carry or stuck)
+        if need_plan:
+            self._replan_carry = False
+            self._turns_without_moving = 0
+            obstacles = self._obstacles(pose, exclude=None)
+            try:
+                route = planner.plan(here, stop, obstacles)
+            except Exception:
+                route = None
+            # Drop the first point if it is essentially where we stand.
+            route = [w for w in (route or [stop]) if math.dist(here, w) > 0.12]
+            self._carry_route = route or [stop]
+            self._carry_goal = goal
+
+        # Follow the route: drive at the next waypoint, dropping it once reached.
+        while self._carry_route and math.dist(here, self._carry_route[0]) <= 0.18:
+            self._carry_route.pop(0)
+        aim = self._carry_route[0] if self._carry_route else stop
+
+        bearing = (((math.degrees(math.atan2(-(aim[1] - here[1]),
+                    aim[0] - here[0])) - pose["heading"] + 180) % 360) - 180)
+        if abs(bearing) > 16:
+            return ("turn", {"degrees": round(bearing, 1)},
+                    "copilot: turning onto the planned route to the platform")
+        step = min(1.0, math.dist(here, aim))
+        return ("move", {"distance": round(max(0.2, step), 2)},
+                "copilot: carrying along the planned direct route, 0.5 m clear")
 
     # ------------------------------------------------------------- report --
     def report(self, pose: dict, holding: bool) -> str:
@@ -144,6 +277,32 @@ class Copilot:
                         "_radius": max(0.10, d.width / 2.0)})
         return out
 
+    def _clear_straight(self, here: tuple[float, float], fwd: tuple[float, float],
+                        obstacles: list[dict]) -> float:
+        """How far ahead the robot can drive before coming within CLEARANCE of
+        any obstacle. The robot's own radius plus the brief's 0.5 m buffer.
+
+        This is the hard cap on any forward move when the path is blocked: it is
+        a property of the straight line itself, so no waypoint beyond an
+        obstacle can ever license driving through it.
+        """
+        robot_r = 0.14
+        limit = 12.0
+        for o in obstacles:
+            ox, oy = o["pos"]
+            r = o.get("_radius", 0.2) + robot_r + CLEARANCE
+            # Project the obstacle centre onto the heading ray.
+            along = (ox - here[0]) * fwd[0] + (oy - here[1]) * fwd[1]
+            if along <= 0:
+                continue                 # behind the robot
+            perp = abs((ox - here[0]) * (-fwd[1]) + (oy - here[1]) * fwd[0])
+            if perp < r:
+                # The ray passes within r of this obstacle; the robot must stop
+                # before the near edge of that encounter.
+                back = math.sqrt(max(0.0, r * r - perp * perp))
+                limit = min(limit, max(0.0, along - back))
+        return limit
+
     def safe_action(self, tool: str, args: dict, pose: dict,
                     holding: bool, depth: float | None) -> tuple[str, dict, str] | None:
         """Vet the model's action against the measured world.
@@ -166,12 +325,28 @@ class Copilot:
         fwd = (math.cos(heading), -math.sin(heading))
         dest = (here[0] + fwd[0] * distance, here[1] + fwd[1] * distance)
 
-        target_xy = self.target_world(pose) if not holding else self._committed_xy
-        obstacles = self._obstacles(pose, exclude=target_xy if not holding else None)
+        if holding:
+            # Carrying: the goal is the platform, and NOTHING is excluded --
+            # every object in the room is an obstacle to route around, keeping
+            # the brief's 0.5 m clearance, on the shortest path to the drop.
+            goal_xy = self.drop_zone
+            obstacles = self._obstacles(pose, exclude=None)
+        else:
+            goal_xy = self.target_world(pose)
+            obstacles = self._obstacles(pose, exclude=goal_xy)
+        target_xy = goal_xy
 
-        # 1. About to drive into the thing being fetched: stop at a clean
-        #    standoff and let the grasp happen, instead of shoving it.
-        if not holding and target_xy is not None:
+        # Is anything in the way of the straight drive? This is decided FIRST,
+        # because closing on the target (branch 1) must never take the robot
+        # through an obstacle sitting between it and that target.
+        blocked = bool(obstacles) and planner.blockers(here, dest, obstacles)
+
+        # 1. About to drive into the thing being fetched, with a clear line to
+        #    it: stop at a clean standoff and let the grasp happen instead of
+        #    shoving it. Pickup only -- while carrying, stopping short is the
+        #    navigator's job. Skipped when an obstacle is in the way, so the
+        #    detour below handles it.
+        if not holding and target_xy is not None and not blocked:
             d_to_target = math.dist(here, target_xy)
             if d_to_target - distance < GRASP_STANDOFF:
                 room = max(0.0, d_to_target - GRASP_STANDOFF)
@@ -184,9 +359,17 @@ class Copilot:
                         f"rather than driving through the target")
 
         # 2. The straight move clips an obstacle: redirect along the planner's
-        #    shortest clear route, which keeps the 0.5 m margin.
-        if obstacles and planner.blockers(here, dest, obstacles):
-            goal = target_xy if (not holding and target_xy is not None) else dest
+        #    clear route, which keeps the 0.5 m margin. Two things must both
+        #    hold -- turn toward the detour, AND never drive past the obstacle
+        #    even toward a valid waypoint beyond it.
+        if blocked:
+            # How far can the robot go straight ahead before coming within
+            # CLEARANCE of any obstacle? That caps every forward move here,
+            # independently of what the planner returns, so a waypoint sitting
+            # beyond the blocker can never license driving through it.
+            clear_ahead = self._clear_straight(here, fwd, obstacles)
+
+            goal = target_xy if target_xy is not None else dest
             try:
                 route = planner.plan(here, goal, obstacles)
             except Exception:
@@ -195,13 +378,21 @@ class Copilot:
                 wx, wy = route[0]
                 bearing = ((math.degrees(math.atan2(-(wy - here[1]), wx - here[0]))
                             - pose["heading"] + 180) % 360) - 180
-                if abs(bearing) > 12:
+                if abs(bearing) > 12 or clear_ahead < 0.25:
                     return ("turn", {"degrees": round(bearing, 1)},
                             "copilot: an obstacle is in the straight path; turning "
                             "onto a clear detour that keeps 0.5 m clearance")
-                step = min(distance, math.dist(here, (wx, wy)))
+                step = min(distance, math.dist(here, (wx, wy)), clear_ahead)
                 return ("move", {"distance": round(max(0.2, step), 2)},
-                        "copilot: following a detour around an obstacle, 0.5 m clear")
+                        "copilot: edging along a detour around an obstacle, 0.5 m clear")
+            # No route at all: do not drive into the blockage. Edge forward only
+            # as far as is provably clear, otherwise turn to find a way.
+            if clear_ahead >= 0.25:
+                return ("move", {"distance": round(min(distance, clear_ahead), 2)},
+                        "copilot: route blocked ahead; advancing only while clear")
+            return ("turn", {"degrees": 45},
+                    "copilot: the way ahead is fully blocked; turning to find a "
+                    "clear line")
 
         # 3. Nothing in the way, but the depth ray sees something close: shorten
         #    so a misjudged distance cannot become a collision.
