@@ -39,6 +39,7 @@ from .vlm import build as build_vlm
 from .vlm import cost_usd
 from .runlog import RunLog
 from .navigation import ReturnNavigator
+from .copilot import Copilot
 
 #: Overridable so the agent can be pointed at an engine on another port.
 #: It must match the port uvicorn was started on -- a mismatch surfaced as a
@@ -611,6 +612,12 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
     patch_xy: tuple[float, float] | None = None
     memory: dict[str, Any] = {}
     navigator = ReturnNavigator()
+    # The copilot does the metric geometry the model is poor at -- which object
+    # matches, where to stand, how to get there without a collision -- entirely
+    # from the camera frames. It is off on the mock path, which has its own.
+    copilot = None if mock else Copilot()
+    if copilot is not None:
+        copilot.set_command(command)
     history: list[str] = []
     finished_reason = "max_steps"
 
@@ -627,6 +634,8 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
         frame_rel = log.save_frame(jpg)
         st = sanitize("state", _get("/state"))
         depth = sanitize("depth", _get("/depth")).get("distance")
+        if copilot is not None:
+            copilot.observe(jpg, st)         # camera + own pose, no extra engine call
         try:
             action = (navigator.decide(jpg, st) if st["holding"]
                       else navigator.prepare(jpg, st))
@@ -744,7 +753,14 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
         else:
             # Only the newest frame is an image; everything older is one text line.
             hist = "\n".join(history[-14:])
-            user_text = f"COMMAND: {command}\n{status}\n\nPREVIOUS STEPS:\n{hist or '(none)'}"
+            vision = ""
+            if copilot is not None:
+                try:
+                    vision = "\n\n" + copilot.report(st, st["holding"])
+                except Exception:
+                    vision = ""
+            user_text = (f"COMMAND: {command}\n{status}{vision}\n\n"
+                         f"PREVIOUS STEPS:\n{hist or '(none)'}")
             assert_no_engine_identifiers(user_text, f"step {step} user text")
             log.progress("Waiting for vision model", step)
             try:
@@ -786,6 +802,13 @@ def run(command: str, model: str | None, mock: bool, max_steps: int,
             corrected = reflex(tool, args, depth, st["holding"])
             if corrected is not None:
                 tool, args, note = corrected
+                thinking = f"{thinking}  [{note}]" if thinking else note
+
+        # ---- copilot: make the move safe against the measured world ----
+        if copilot is not None and tool in ("move", "turn"):
+            safe = copilot.safe_action(tool, args, st, st["holding"], depth)
+            if safe is not None:
+                tool, args, note = safe
                 thinking = f"{thinking}  [{note}]" if thinking else note
 
         # ---- execute ----
