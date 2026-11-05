@@ -277,22 +277,34 @@ def cost_usd(vlm, usage: dict[str, int]) -> float:
 
 
 
-def available() -> dict[str, bool]:
+def available(fresh: bool = False) -> dict[str, bool]:
     """Which providers are usable right now, without revealing any key.
 
-    `local` is reported available only when the daemon actually answers, since
-    an installed-but-stopped Ollama is not a usable provider.
+    `fresh` reads .env directly for the check instead of trusting the process
+    environment. The engine server uses it so that a key corrected in .env is
+    recognised without a restart, and without the stale key it may be holding
+    masking the fix.
     """
-    # Load .env defensively: a caller that has not done so would be told a key
-    # is missing when it is sitting in the file, and the console would grey out
-    # a provider that works perfectly well.
+    keys: dict[str, str] = {}
     try:
-        from .env import load as _load_env
+        from .env import ENV_FILES
 
-        _load_env()
+        for path in ENV_FILES:
+            if not path.exists():
+                continue
+            for raw in path.read_text(encoding="utf-8-sig").splitlines():
+                line = raw.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, _, v = line.partition("=")
+                    keys[k.strip()] = v.strip().strip('"').strip("'")
     except Exception:
         pass
 
+    def has(env_key: str) -> bool:
+        if fresh:
+            return bool(keys.get(env_key) or os.environ.get(env_key))
+        return bool(os.environ.get(env_key) or keys.get(env_key))
+
     # `mock` needs no key: it is the offline path and calls nothing.
-    return {name: True if name == "mock" else bool(os.environ.get(cls.env_key))
+    return {name: True if name == "mock" else has(cls.env_key)
             for name, cls in PROVIDERS.items()}

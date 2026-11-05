@@ -24,6 +24,7 @@ Admin routes are prefixed /admin and are NEVER called by the agent.
 from __future__ import annotations
 
 import io
+import os
 import json
 import queue
 import random
@@ -492,13 +493,29 @@ def admin_agent_run(body: AgentRunBody) -> dict[str, Any]:
     if body.obstacles:
         cmd.append("--obstacles")
 
+    # The agent reads .env itself, but its own loader refuses to overwrite a
+    # value already in the environment -- a deliberate rule so a real export
+    # can override .env. The trap is that THIS server may hold a stale key in
+    # its environment from when it started, which the child would then inherit
+    # and keep. So overlay a fresh read of .env here, letting the file win, and
+    # the agent always runs with the key that is in .env right now.
+    child_env = dict(os.environ)
+    try:
+        for line in (root / ".env").read_text(encoding="utf-8-sig").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, _, v = line.partition("=")
+                child_env[k.strip()] = v.strip().strip('"').strip("'")
+    except FileNotFoundError:
+        pass
+
     # Persist startup/API failures: a pipe was consumed by the first status
     # poll, so refreshing the console erased the only useful error message.
     run_dir = root.parent / "runs" / f"run_{run_id}"
     run_dir.mkdir(parents=True, exist_ok=True)
     with (run_dir / "agent.stdout.log").open("w", encoding="utf-8") as output:
         proc = subprocess.Popen(cmd, cwd=str(root), stdout=output,
-                                stderr=subprocess.STDOUT, text=True)
+                                stderr=subprocess.STDOUT, text=True, env=child_env)
     _agent_proc.update(proc=proc, run_id=run_id, started=time.time())
     return {"started": True, "run_id": run_id, "command": body.command.strip(),
             "provider": body.provider, "model": body.model or "(provider default)"}
@@ -561,11 +578,14 @@ def admin_agent_stop() -> dict[str, Any]:
 @app.get("/admin/providers")
 def admin_providers() -> dict[str, Any]:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from agent.env import load as load_env
     from agent.vlm import DEFAULT_MODEL, available
 
-    load_env()
-    return {"available": available(), "defaults": DEFAULT_MODEL}
+    # Check availability against a FRESH read of .env without writing the keys
+    # into this server's own environment. The engine never calls the model, so
+    # it has no reason to hold a provider key -- and if it did, every agent it
+    # spawns would inherit that snapshot and ignore a .env the user has since
+    # corrected. That is exactly the bug that made a fixed key still fail.
+    return {"available": available(fresh=True), "defaults": DEFAULT_MODEL}
 
 
 @app.post("/admin/claim")
